@@ -55,3 +55,25 @@ Rejected actions leave progress unchanged.
 Run `TEST_DATABASE_URL=postgresql://… npm run test:integration` against a test
 database with migration 000002 applied. The test runs actual PostgreSQL
 transactions and substitutes an in-process token verifier.
+
+### Phase 1 service acceptance
+
+Run Firebase Authentication Emulator for a `demo-*` project and start this API
+with the matching `FIREBASE_PROJECT_ID`, `FIREBASE_AUTH_EMULATOR_HOST`
+(for example, `127.0.0.1:9099`), and a disposable PostgreSQL database with the
+farm migration applied. The Admin SDK uses emulator mode when this variable
+is set. Keep it out of deployments.
+
+In a second terminal, use the same Firebase values and set
+`FARM_API_ORIGIN=http://127.0.0.1:8080`. Optionally set the same `WEB_ORIGIN`
+as the API to assert its browser response header. Run:
+
+```sh
+node test/phase-one-acceptance.mjs
+```
+
+The script creates a unique emulator user, signs in three times, refreshes an
+ID token, and waits for the actual crop timer. It verifies that observers see
+the same plot and a replayed harvest awards wheat once. Run against disposable
+services because the test leaves its account and farm in the test databases.
+The Unity Play Mode and device handoff checks are separate.
