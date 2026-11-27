@@ -95,3 +95,16 @@ mask samples along shared chunk edges. The 9 km² package classified
 The worker and API served all nine 1,089-byte mask files to the owner and
 returned HTTP 404 to an unrelated account. The classification follows the
 source polygons and the 31.25 m game sampling grid.
+
+### Keep terrain generation running
+
+After building the API, run `npm run terrain:watch` as a long-running service
+with the same database and terrain settings as the one-shot command. The
+worker processes queued worlds in order and checks for new work every five
+seconds when the queue is empty. A failed export is recorded on the world
+and the worker moves on to the next request. SIGTERM or SIGINT lets an
+in-flight export finish before shutdown. Use a service supervisor to restart
+the worker after infrastructure failures.
+
+The API and worker must both have access to the same `TERRAIN_ROOT`.
+`npm run terrain:once` remains available for manual processing.
