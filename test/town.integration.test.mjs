@@ -6,7 +6,7 @@ import { createApp } from '../dist/app.js';
 import { FarmStore } from '../dist/farm.js';
 
 test('town buildings charge once and residents arrive from server time', async (t) => {
-  assert.ok(process.env.TEST_DATABASE_URL, 'Set TEST_DATABASE_URL to a test database with migrations 000013–000014.');
+  assert.ok(process.env.TEST_DATABASE_URL, 'Set TEST_DATABASE_URL to a test database with migrations 000013–000015.');
   const pool = new Pool({ connectionString: process.env.TEST_DATABASE_URL });
   const uid = randomUUID();
   const other = randomUUID();
@@ -85,5 +85,39 @@ test('town buildings charge once and residents arrive from server time', async (
   assert.deepEqual(grown.town.served, { water: 6, jobs: 4, education: 6, health: 6 });
   assert.equal(grown.town.wellbeing, 95);
   assert.deepEqual((await load('other')).json().town.served, { water: 0, jobs: 0, education: 0, health: 0 });
+
+  const order = { commandId: randomUUID(), expectedRevision: grown.revision, action: 'fulfil_town_order',
+    orderKey: 'wheat_supply', orderDate: grown.townOrders.date };
+  assert.equal((await send({ ...order, orderDate: '2000-01-01' })).json().code, 'town_order_expired');
+  assert.equal((await send({ ...order, reward: 1000 })).statusCode, 400);
+  assert.equal((await send({ ...order, expectedRevision: 0 }, 'other')).json().code, 'town_order_locked');
+  assert.equal((await send(order)).json().code, 'town_order_stock');
+
+  await pool.query('UPDATE starter_farms SET wheat = 4, milk = 1, flour = 1 WHERE player_uid = $1', [uid]);
+  const results = await Promise.all([send(order), send(order, 'second')]);
+  assert.deepEqual(results.map((response) => response.statusCode), [200, 200]);
+  assert.deepEqual(results[0].json(), results[1].json());
+  const fulfilled = results[0].json();
+  assert.equal(fulfilled.wallet.coins, grown.wallet.coins + 8);
+  assert.equal(fulfilled.inventory.wheat, 2);
+  assert.equal(fulfilled.townOrders.offers[0].fulfilled, true);
+  assert.equal((await send({ ...order, commandId: randomUUID(), expectedRevision: fulfilled.revision })).json().code,
+    'town_order_fulfilled');
+  assert.equal((await load('second')).json().townOrders.offers[0].fulfilled, true);
+  assert.equal((await load('other')).json().townOrders.offers[0].fulfilled, false);
+
+  let next = fulfilled;
+  for (const [orderKey, item, reward] of [['flour_supply', 'flour', 12], ['milk_supply', 'milk', 10]]) {
+    const response = await send({ ...order, orderKey, commandId: randomUUID(), expectedRevision: next.revision });
+    assert.equal(response.statusCode, 200);
+    const state = response.json();
+    assert.equal(state.inventory[item], 0);
+    assert.equal(state.wallet.coins, next.wallet.coins + reward);
+    next = state;
+  }
+  const orderCredits = await pool.query(
+    "SELECT coin_delta FROM farm_wallet_entries WHERE player_uid = $1 AND reason = 'town_order' ORDER BY coin_delta", [uid],
+  );
+  assert.deepEqual(orderCredits.rows, [{ coin_delta: 8 }, { coin_delta: 10 }, { coin_delta: 12 }]);
 
 });
