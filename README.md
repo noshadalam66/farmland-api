@@ -19,7 +19,7 @@ Open pull requests against `main` after the initial bootstrap.
 ## Starter farm
 
 Apply migrations in `farmland-db` including `000002_starter_farms.sql` and
-`000005_crop_variety.sql` `000006_crop_market.sql`, `000007_farm_expansion.sql`, and `000008_livestock.sql`, set
+`000005_crop_variety.sql` `000006_crop_market.sql`, `000007_farm_expansion.sql`, `000008_livestock.sql`, and `000009_animal_production.sql`, set
 `DATABASE_URL` and `FIREBASE_PROJECT_ID`, and restart the server. For the Unity
 Web shell, set `WEB_ORIGIN` to the exact origin that serves it. With both required
 variables unset the service exposes only the health endpoint.
@@ -67,6 +67,12 @@ purchase one animal at the server price. The farm response exposes
 prototype prices are 12 and 6 coins, with a shared capacity of eight animals.
 Animal creation, coin debit, and receipt are committed together.
 
+Submit `feed_animal` with an owned `animalId` to spend one wheat. Chickens
+produce eggs in 60 seconds and goats produce milk in 90 seconds. The roster
+exposes each animal's `productReadyAt`. Once ready, submit `collect_animal`
+with its ID to add one unit to `inventory.eggs` or `inventory.milk`. Feeding
+cannot reset a timer or consume another unit while a product is pending.
+
 After a lost response, retry the same command unchanged. The API returns the
 original committed snapshot, which may be older than the latest farm state.
 Refresh via GET before presenting the state after a retry. Conflicts return
@@ -74,7 +80,7 @@ HTTP 409 with `{ code, state }`, including the latest state as of the check.
 Rejected actions leave progress unchanged.
 
 Run `TEST_DATABASE_URL=postgresql://… npm run test:integration` against a test
-database with migrations 000002 and 000005–000008 applied. The test runs actual PostgreSQL
+database with migrations 000002 and 000005–000009 applied. The test runs actual PostgreSQL
 transactions and substitutes an in-process token verifier.
 
 ### Phase 1 service acceptance

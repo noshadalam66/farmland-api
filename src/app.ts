@@ -15,12 +15,16 @@ const commandSchema = {
   properties: {
     commandId: { type: 'string', pattern: '^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$' },
     expectedRevision: { type: 'integer', minimum: 0, maximum: 2147483647 },
-    action: { type: 'string', enum: ['plant', 'harvest', 'sell', 'buy_parcel', 'buy_animal'] },
+    action: { type: 'string', enum: ['plant', 'harvest', 'sell', 'buy_parcel', 'buy_animal', 'feed_animal', 'collect_animal'] },
     crop: { type: 'string', enum: crops },
+    animalId: { type: 'string', pattern: '^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$' },
     species: { type: 'string', enum: animalSpecies },
     plotId: { type: 'string', enum: ['starter', 'expansion'] },
   },
   allOf: [
+    { if: { properties: { action: { enum: ['feed_animal', 'collect_animal'] } } },
+      then: { required: ['animalId'], not: { anyOf: [{ required: ['crop'] }, { required: ['plotId'] }] } },
+      else: { not: { required: ['animalId'] } } },
     { if: { properties: { action: { const: 'buy_animal' } } },
       then: { required: ['species'], not: { anyOf: [{ required: ['crop'] }, { required: ['plotId'] }] } },
       else: { not: { required: ['species'] } } },

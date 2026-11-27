@@ -6,7 +6,7 @@ import { createApp } from '../dist/app.js';
 import { FarmStore } from '../dist/farm.js';
 
 test('farm commands preserve progress across sessions and retries', async (t) => {
-  assert.ok(process.env.TEST_DATABASE_URL, 'Set TEST_DATABASE_URL to a test database with migrations 000002 and 000005–000008.');
+  assert.ok(process.env.TEST_DATABASE_URL, 'Set TEST_DATABASE_URL to a test database with migrations 000002 and 000005–000009.');
   const pool = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL });
   const playerUid = randomUUID();
   const otherUid = randomUUID();
@@ -88,7 +88,7 @@ test('farm commands preserve progress across sessions and retries', async (t) =>
 
   const final = (await load('android')).json();
   assert.equal(final.revision, 2);
-  assert.deepEqual(final.inventory, { wheat: 1, corn: 0, rice: 0 });
+  assert.deepEqual(final.inventory, { wheat: 1, corn: 0, rice: 0, milk: 0, eggs: 0 });
   assert.equal(final.plot, null);
 
   let revision = final.revision;
@@ -119,7 +119,7 @@ test('farm commands preserve progress across sessions and retries', async (t) =>
     assert.deepEqual((await submit('android', harvestCrop)).json(), collected.json());
     revision = collected.json().revision;
   }
-  assert.deepEqual((await load('android')).json().inventory, { wheat: 1, corn: 1, rice: 1 });
+  assert.deepEqual((await load('android')).json().inventory, { wheat: 1, corn: 1, rice: 1, milk: 0, eggs: 0 });
 
   const legacyReceipt = { ...plantState, inventory: { wheat: 0 },
     plot: { plantedAt: plantState.plot.plantedAt, readyAt: plantState.plot.readyAt } };
@@ -130,7 +130,7 @@ test('farm commands preserve progress across sessions and retries', async (t) =>
   const legacyReplay = await submit('web', { ...plant, crop: 'wheat' });
   assert.equal(legacyReplay.statusCode, 200);
   assert.equal(legacyReplay.json().plot.crop, 'wheat');
-  assert.deepEqual(legacyReplay.json().inventory, { wheat: 0, corn: 0, rice: 0 });
+  assert.deepEqual(legacyReplay.json().inventory, { wheat: 0, corn: 0, rice: 0, milk: 0, eggs: 0 });
 
   const newPlant = await submit('android', {
     commandId: randomUUID(), expectedRevision: revision, action: 'plant', crop: 'rice',
@@ -230,5 +230,42 @@ test('farm commands preserve progress across sessions and retries', async (t) =>
     [playerUid],
   );
   assert.deepEqual(animalDebits.rows, [{ coin_delta: -12 }, { coin_delta: -6 }]);
+
+  const roster = goats.json();
+  const chickenId = roster.livestock.animals[0].animalId;
+  const goatId = roster.livestock.animals[1].animalId;
+  const feed = { commandId: randomUUID(), expectedRevision: roster.revision, action: 'feed_animal', animalId: chickenId };
+  assert.equal((await submit('web', { ...feed, animalId: randomUUID() })).json().code, 'animal_not_owned');
+  assert.equal((await submit('web', { ...feed, animalId: 'invalid' })).statusCode, 400);
+  const fedChicken = await submit('android', feed);
+  assert.equal(fedChicken.statusCode, 200);
+  const feeding = fedChicken.json();
+  assert.equal(feeding.inventory.wheat, roster.inventory.wheat - 1);
+  assert.equal(Date.parse(feeding.livestock.animals[0].productReadyAt) - Date.parse(feeding.serverTime), 60_000);
+  assert.deepEqual((await submit('web', feed)).json(), feeding);
+  assert.deepEqual((await load('ios')).json().livestock, feeding.livestock);
+  const collect = { ...feed, commandId: randomUUID(), expectedRevision: feeding.revision, action: 'collect_animal' };
+  assert.equal((await submit('ios', collect)).json().code, 'product_not_ready');
+  assert.equal((await submit('ios', { ...feed, commandId: randomUUID(), expectedRevision: feeding.revision })).json().code,
+    'animal_already_fed');
+
+  await pool.query("UPDATE farm_animals SET product_ready_at = now() - interval '1 second' WHERE animal_id = $1", [chickenId]);
+  const eggs = await submit('ios', collect);
+  assert.equal(eggs.statusCode, 200);
+  assert.equal(eggs.json().inventory.eggs, 1);
+  assert.equal(eggs.json().livestock.animals[0].productReadyAt, null);
+  assert.deepEqual((await submit('android', collect)).json(), eggs.json());
+
+  const feedGoat = { ...feed, commandId: randomUUID(), expectedRevision: eggs.json().revision, animalId: goatId };
+  assert.equal((await submit('web', feedGoat)).json().code, 'insufficient_crop');
+  await pool.query('UPDATE starter_farms SET wheat = 1 WHERE player_uid = $1', [playerUid]);
+  const fedGoat = await submit('web', feedGoat);
+  assert.equal(fedGoat.statusCode, 200);
+  assert.equal(Date.parse(fedGoat.json().livestock.animals[1].productReadyAt) - Date.parse(fedGoat.json().serverTime), 90_000);
+  await pool.query("UPDATE farm_animals SET product_ready_at = now() - interval '1 second' WHERE animal_id = $1", [goatId]);
+  const milk = await submit('android', { ...collect, commandId: randomUUID(), expectedRevision: fedGoat.json().revision, animalId: goatId });
+  assert.equal(milk.statusCode, 200);
+  assert.equal(milk.json().inventory.milk, 1);
+  assert.equal(milk.json().inventory.eggs, 1);
 
 });
