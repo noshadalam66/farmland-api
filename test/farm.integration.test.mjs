@@ -6,7 +6,7 @@ import { createApp } from '../dist/app.js';
 import { FarmStore } from '../dist/farm.js';
 
 test('farm commands preserve progress across sessions and retries', async (t) => {
-  assert.ok(process.env.TEST_DATABASE_URL, 'Set TEST_DATABASE_URL to a test database with migrations 000002 and 000005–000009.');
+  assert.ok(process.env.TEST_DATABASE_URL, 'Set TEST_DATABASE_URL to a test database with migrations 000002 and 000005–000010.');
   const pool = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL });
   const playerUid = randomUUID();
   const otherUid = randomUUID();
@@ -267,5 +267,47 @@ test('farm commands preserve progress across sessions and retries', async (t) =>
   assert.equal(milk.statusCode, 200);
   assert.equal(milk.json().inventory.milk, 1);
   assert.equal(milk.json().inventory.eggs, 1);
+
+  const milkState = milk.json();
+  await pool.query('UPDATE starter_farms SET coins = 6 WHERE player_uid = $1', [playerUid]);
+  const secondChicken = await submit('web', { ...buyChicken, commandId: randomUUID(), expectedRevision: milkState.revision });
+  assert.equal(secondChicken.statusCode, 200);
+  const pair = secondChicken.json();
+  const father = pair.livestock.animals[2];
+  assert.equal(father.sex, 'male');
+  assert.equal(pair.livestock.animals[0].sex, 'female');
+
+  const breed = { commandId: randomUUID(), expectedRevision: pair.revision, action: 'start_breeding',
+    animalId: chickenId, partnerId: father.animalId };
+  assert.equal((await submit('ios', { ...breed, partnerId: goatId })).json().code, 'invalid_breeding_pair');
+  assert.equal((await submit('ios', { ...breed, partnerId: chickenId })).json().code, 'invalid_breeding_pair');
+  const breeding = await submit('ios', breed);
+  assert.equal(breeding.statusCode, 200);
+  const pendingBreeding = breeding.json().livestock.breeding;
+  assert.equal(pendingBreeding.motherId, chickenId);
+  assert.equal(pendingBreeding.fatherId, father.animalId);
+  assert.equal(Date.parse(pendingBreeding.readyAt) - Date.parse(breeding.json().serverTime), 180_000);
+  assert.deepEqual((await load('web')).json().livestock.breeding, pendingBreeding);
+
+  const collectOffspring = { commandId: randomUUID(), expectedRevision: breeding.json().revision, action: 'collect_offspring' };
+  assert.equal((await submit('web', collectOffspring)).json().code, 'offspring_not_ready');
+  await pool.query("UPDATE farm_breeding SET ready_at = now() - interval '1 second' WHERE player_uid = $1", [playerUid]);
+  const births = await Promise.all([submit('web', collectOffspring), submit('android', collectOffspring)]);
+  assert.equal(births[0].statusCode, 200);
+  assert.equal(births[1].statusCode, 200);
+  const birth = births[0].json();
+  assert.deepEqual(births[1].json(), birth);
+  assert.equal(birth.livestock.animals.length, 4);
+  assert.equal(birth.livestock.breeding, null);
+  const chick = birth.livestock.animals[3];
+  assert.equal(chick.motherId, chickenId);
+  assert.equal(chick.fatherId, father.animalId);
+  assert.equal(Date.parse(chick.matureAt) - Date.parse(birth.serverTime), 120_000);
+  assert.deepEqual((await load('ios')).json().livestock, birth.livestock);
+  const relatedPair = { ...breed, commandId: randomUUID(), expectedRevision: birth.revision,
+    animalId: chick.animalId, partnerId: chick.sex === 'female' ? father.animalId : chickenId };
+  assert.equal((await submit('web', relatedPair)).json().code, 'invalid_breeding_pair');
+  await pool.query("UPDATE farm_animals SET mature_at = now() - interval '1 second' WHERE animal_id = $1", [chick.animalId]);
+  assert.equal((await submit('web', relatedPair)).json().code, 'invalid_breeding_pair');
 
 });
