@@ -72,3 +72,26 @@ polygon source are indistinguishable from land, so validate the dataset
 extent before enabling this layer. Older elevation-only packages keep
 their existing format. The API serves masks through the owner's terrain
 route. The Unity renderer still needs to consume the optional mask.
+
+### San Francisco water source
+
+The USGS pilot can be paired with the U.S. Census Bureau's 2024 TIGER/Line
+Area Water polygons for San Francisco County (FIPS 06075). Download the
+archive from the [official Area Water directory](https://www2.census.gov/geo/tiger/TIGER2024/AREAWATER/).
+Keep the shapefile sidecar files together.
+
+```sh
+mkdir -p /tmp/farmland-pilot/water
+curl -fL https://www2.census.gov/geo/tiger/TIGER2024/AREAWATER/tl_2024_06075_areawater.zip \
+  -o /tmp/farmland-pilot/water.zip
+unzip /tmp/farmland-pilot/water.zip -d /tmp/farmland-pilot/water
+export TERRAIN_WATER_SOURCE=/tmp/farmland-pilot/water/tl_2024_06075_areawater.shp
+export TERRAIN_WATER_SOURCE_ID=TIGER2024/tl_2024_06075_areawater
+```
+
+At the USGS pilot center, all three area presets exported with matching
+mask samples along shared chunk edges. The 9 km² package classified
+`37.7598, -122.514` offshore as water and `37.7598, -122.486` inland as land.
+The worker and API served all nine 1,089-byte mask files to the owner and
+returned HTTP 404 to an unrelated account. The classification follows the
+source polygons and the 31.25 m game sampling grid.
