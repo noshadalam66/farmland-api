@@ -167,3 +167,12 @@ the server's construction timestamp, including while the player is away.
 The snapshot reports building IDs, housing capacity, and current population.
 Construction uses the same farm revision, wallet ledger, and retry receipt
 as other purchases.
+
+
+Migration 000014 adds a water tower, workshops, schools, and clinics.
+Construction uses the same `build_town` command and the catalog's
+prerequisites, limits, and prices. The town snapshot shows service capacity,
+residents served, and a 0–100 wellbeing score. The score is zero until
+residents arrive, then starts at 40 and adds up to 15 points each for water,
+employment, school, and clinic coverage. Existing cottage arrival rules
+still apply.
