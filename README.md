@@ -153,3 +153,17 @@ For a ready world, the authenticated owner can GET
 `/v1/world/terrain/manifest.json` and the named chunks under
 `/v1/world/terrain/`. This pilot uses shared local storage and one operator-
 selected source raster.
+
+## Starter settlement
+
+Apply migration 000013 and purchase the farm expansion before construction.
+Send `action: "build_town"` with `building: "road"` or `"cottage"`. The town
+catalog in `GET /v1/farm` supplies prices and limits. A road costs 6 coins
+and unlocks cottages, which cost 12 coins. The pilot supports one road and
+up to four cottages.
+
+Each cottage has space for three residents. One arrives per minute based on
+the server's construction timestamp, including while the player is away.
+The snapshot reports building IDs, housing capacity, and current population.
+Construction uses the same farm revision, wallet ledger, and retry receipt
+as other purchases.

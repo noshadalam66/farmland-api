@@ -4,6 +4,9 @@ import { animalCapacity, animalPrices, animalProduction, animalRosterExpression,
 
 import { millExpression, millState, planMillAction, type Mill, type MillAction, type MillError } from './mill.js';
 
+import { constructBuilding, constructionPrice, townBuildingsExpression, townState,
+  type BuildingKind, type TownBuilding, type TownError } from './town.js';
+
 export const crops = ['wheat', 'corn', 'rice'] as const;
 type Crop = typeof crops[number];
 type Product = 'milk' | 'eggs' | 'flour';
@@ -13,6 +16,7 @@ export type FarmCommand = {
   commandId: string;
   expectedRevision: number;
   partnerId?: string;
+  building?: BuildingKind;
 } & (
   | { action: 'plant'; species?: never; animalId?: never; crop?: Crop; plotId?: PlotId }
   | { action: 'harvest'; species?: never; animalId?: never; crop?: never; plotId?: PlotId }
@@ -22,6 +26,7 @@ export type FarmCommand = {
   | { action: 'feed_animal' | 'collect_animal'; crop?: never; plotId?: never; species?: never; animalId: string }
   | { action: 'start_breeding'; crop?: never; plotId?: never; species?: never; animalId: string; partnerId: string }
   | { action: 'collect_offspring' | MillAction; crop?: never; plotId?: never; species?: never; animalId?: never }
+  | { action: 'build_town'; crop?: never; plotId?: never; species?: never; animalId?: never; building: BuildingKind }
 );
 
 type FarmRow = PlotRow & {
@@ -50,6 +55,7 @@ export type FarmState = {
   expansion: { owned: boolean; price: number; plot: PlotState };
   livestock: { animals: Animal[]; prices: Record<AnimalSpecies, number>; capacity: number; breeding: Breeding | null };
   mill: ReturnType<typeof millState>;
+  town: ReturnType<typeof townState>;
   serverTime: string;
 };
 
@@ -57,19 +63,20 @@ type PlotState = { crop: Crop; plantedAt: string; readyAt: string } | null;
 
 type CommandResult =
   | { ok: true; state: FarmState }
-  | { ok: false; code: 'command_id_reused' | 'stale_revision' | 'plot_occupied' | 'plot_empty' | 'crop_not_ready' | 'insufficient_crop' | 'insufficient_coins' | 'parcel_already_owned' | 'parcel_not_owned' | 'livestock_capacity' | 'animal_not_owned' | 'animal_already_fed' | 'animal_not_fed' | 'product_not_ready' | 'breeding_in_progress' | 'breeding_not_started' | 'offspring_not_ready' | 'invalid_breeding_pair' | MillError; state: FarmState };
+  | { ok: false; code: 'command_id_reused' | 'stale_revision' | 'plot_occupied' | 'plot_empty' | 'crop_not_ready' | 'insufficient_crop' | 'insufficient_coins' | 'parcel_already_owned' | 'parcel_not_owned' | 'livestock_capacity' | 'animal_not_owned' | 'animal_already_fed' | 'animal_not_fed' | 'product_not_ready' | 'breeding_in_progress' | 'breeding_not_started' | 'offspring_not_ready' | 'invalid_breeding_pair' | MillError | TownError; state: FarmState };
 
 const expansionPrice = 7;
 const sellPrices: Record<Crop, number> = { wheat: 3, corn: 5, rice: 7 };
 const growthMilliseconds: Record<Crop, number> = { wheat: 60_000, corn: 90_000, rice: 120_000 };
 
-type SavedFarmState = Omit<FarmState, 'inventory' | 'plot' | 'wallet' | 'market' | 'expansion' | 'livestock' | 'mill'> & {
+type SavedFarmState = Omit<FarmState, 'inventory' | 'plot' | 'wallet' | 'market' | 'expansion' | 'livestock' | 'mill' | 'town'> & {
   inventory: { wheat: number; corn?: number; rice?: number; milk?: number; eggs?: number; flour?: number };
   wallet?: FarmState['wallet'];
   market?: FarmState['market'];
   expansion?: FarmState['expansion'];
   livestock?: FarmState['livestock'];
   mill?: FarmState['mill'];
+  town?: FarmState['town'];
   plot: { crop?: Crop; plantedAt: string; readyAt: string } | null;
 };
 
@@ -78,6 +85,7 @@ function readSavedState(state: SavedFarmState): FarmState {
     ...state,
     inventory: { corn: 0, rice: 0, milk: 0, eggs: 0, flour: 0, ...state.inventory },
     mill: state.mill ?? millState(null),
+    town: state.town ?? townState([], new Date(state.serverTime)),
     wallet: state.wallet ?? { coins: 0 },
     market: state.market ?? { sellPrices },
     expansion: state.expansion ?? { owned: false, price: expansionPrice, plot: null },
@@ -95,7 +103,7 @@ function plotState(plot: PlotRow | undefined): PlotState {
   return { crop: plot.planted_crop, plantedAt: plot.planted_at.toISOString(), readyAt: plot.ready_at.toISOString() };
 }
 
-function snapshot(farm: FarmRow, now: Date, animals: Animal[], breeding: Breeding | null, mill: Mill | null, expansion?: PlotRow): FarmState {
+function snapshot(farm: FarmRow, now: Date, animals: Animal[], breeding: Breeding | null, mill: Mill | null, buildings: TownBuilding[], expansion?: PlotRow): FarmState {
   return {
     revision: farm.revision,
     inventory: { wheat: farm.wheat, corn: farm.corn, rice: farm.rice, milk: farm.milk, eggs: farm.eggs, flour: farm.flour },
@@ -105,6 +113,7 @@ function snapshot(farm: FarmRow, now: Date, animals: Animal[], breeding: Breedin
     livestock: { animals, prices: animalPrices, capacity: animalCapacity, breeding },
     expansion: { owned: expansion !== undefined, price: expansionPrice, plot: plotState(expansion) },
     mill: millState(mill),
+    town: townState(buildings, now),
     serverTime: now.toISOString(),
   };
 }
@@ -114,14 +123,14 @@ export class FarmStore {
 
   async load(playerUid: string): Promise<FarmState> {
     const { rows: [farm] } = await this.pool.query<FarmRow & { server_time: Date; expansion_owned: boolean; expansion_crop: Crop | null;
-      expansion_planted_at: Date | null; expansion_ready_at: Date | null; animals: Animal[]; breeding: Breeding | null; mill: Mill | null }>(
+      expansion_planted_at: Date | null; expansion_ready_at: Date | null; animals: Animal[]; breeding: Breeding | null; mill: Mill | null; buildings: TownBuilding[] }>(
       `SELECT COALESCE(farm.revision, 0) AS revision, COALESCE(farm.wheat, 0) AS wheat,
               COALESCE(farm.corn, 0) AS corn, COALESCE(farm.rice, 0) AS rice,
               COALESCE(farm.milk, 0) AS milk, COALESCE(farm.eggs, 0) AS eggs,
               COALESCE(farm.flour, 0) AS flour, COALESCE(farm.coins, 0) AS coins, farm.planted_at, farm.ready_at, farm.planted_crop, statement_timestamp() AS server_time,
               expansion.player_uid IS NOT NULL AS expansion_owned, expansion.planted_crop AS expansion_crop,
               expansion.planted_at AS expansion_planted_at, expansion.ready_at AS expansion_ready_at,
-              ${animalRosterExpression} AS animals, ${breedingExpression} AS breeding, ${millExpression} AS mill
+              ${animalRosterExpression} AS animals, ${breedingExpression} AS breeding, ${millExpression} AS mill, ${townBuildingsExpression} AS buildings
        FROM (VALUES ($1::text)) AS player(uid)
        LEFT JOIN starter_farms AS farm ON farm.player_uid = player.uid
        LEFT JOIN farm_expansion_plots AS expansion ON expansion.player_uid = player.uid`,
@@ -130,7 +139,7 @@ export class FarmStore {
     const expansion = farm.expansion_owned ? {
       planted_crop: farm.expansion_crop, planted_at: farm.expansion_planted_at, ready_at: farm.expansion_ready_at,
     } : undefined;
-    return snapshot(farm, farm.server_time, farm.animals, farm.breeding, farm.mill, expansion);
+    return snapshot(farm, farm.server_time, farm.animals, farm.breeding, farm.mill, farm.buildings, expansion);
   }
 
   async execute(playerUid: string, command: FarmCommand): Promise<CommandResult> {
@@ -166,10 +175,10 @@ export class FarmStore {
       'SELECT planted_crop, planted_at, ready_at FROM farm_expansion_plots WHERE player_uid = $1',
       [playerUid],
     );
-    const { rows: [{ animals, breeding, mill }] } = await client.query<{ animals: Animal[]; breeding: Breeding | null; mill: Mill | null }>(
-      `SELECT ${animalRosterExpression} AS animals, ${breedingExpression} AS breeding, ${millExpression} AS mill FROM (VALUES ($1::text)) AS player(uid)`, [playerUid],
+    const { rows: [{ animals, breeding, mill, buildings }] } = await client.query<{ animals: Animal[]; breeding: Breeding | null; mill: Mill | null; buildings: TownBuilding[] }>(
+      `SELECT ${animalRosterExpression} AS animals, ${breedingExpression} AS breeding, ${millExpression} AS mill, ${townBuildingsExpression} AS buildings FROM (VALUES ($1::text)) AS player(uid)`, [playerUid],
     );
-    const state = snapshot(farm, now, animals, breeding, mill, expansion);
+    const state = snapshot(farm, now, animals, breeding, mill, buildings, expansion);
     const { rows: [previous] } = await client.query<{
       action: FarmCommand['action'];
       expected_revision: number;
@@ -178,9 +187,10 @@ export class FarmStore {
       animal_species: AnimalSpecies | null;
       animal_id: string | null;
       partner_id: string | null;
+      building_kind: BuildingKind | null;
       response: SavedFarmState;
     }>(
-      'SELECT action, expected_revision, crop, plot_id, animal_species, animal_id, partner_id, response FROM starter_farm_commands WHERE player_uid = $1 AND command_id = $2',
+      'SELECT action, expected_revision, crop, plot_id, animal_species, animal_id, partner_id, building_kind, response FROM starter_farm_commands WHERE player_uid = $1 AND command_id = $2',
       [playerUid, command.commandId],
     );
 
@@ -194,7 +204,8 @@ export class FarmStore {
       const previousPlot = previous.plot_id ?? (previous.action === 'plant' || previous.action === 'harvest' ? 'starter' : null);
       if (previous.action !== command.action || previous.expected_revision !== command.expectedRevision ||
           previousCrop !== commandCrop || previousPlot !== plotId || previous.animal_species !== (command.species ?? null) ||
-          previous.animal_id !== animalId || previous.partner_id !== partnerId) {
+          previous.animal_id !== animalId || previous.partner_id !== partnerId ||
+          previous.building_kind !== (command.building ?? null)) {
         return { ok: false, code: 'command_id_reused', state };
       }
       return { ok: true, state: readSavedState(previous.response) };
@@ -253,6 +264,7 @@ export class FarmStore {
     let updatedAnimals = animals;
     let updatedBreeding = breeding;
     let updatedMill = mill;
+    let updatedBuildings = buildings;
     switch (command.action) {
       case 'sell':
         coinDelta = sellPrices[command.crop];
@@ -315,6 +327,17 @@ export class FarmStore {
         updated = inventoryUpdated;
         break;
       }
+      case 'build_town': {
+        const price = constructionPrice(command.building, buildings, expansion !== undefined);
+        if (typeof price === 'string') return { ok: false, code: price, state };
+        if (farm.coins < price) return { ok: false, code: 'insufficient_coins', state };
+        const building = await constructBuilding(client, playerUid, command.building, now);
+        updatedBuildings = [...buildings, building];
+        coinDelta = -price;
+        reason = 'town_construction';
+        updated = await this.adjustWallet(client, playerUid, coinDelta);
+        break;
+      }
       case 'buy_mill':
       case 'start_milling':
       case 'collect_flour':
@@ -359,11 +382,11 @@ export class FarmStore {
         updated = await this.updatePlot(client, playerUid, harvestedCrop, plotId === 'starter', times);
       }
     }
-    const response = snapshot(updated, now, updatedAnimals, updatedBreeding, updatedMill, updatedExpansion);
+    const response = snapshot(updated, now, updatedAnimals, updatedBreeding, updatedMill, updatedBuildings, updatedExpansion);
     await client.query(
-      `INSERT INTO starter_farm_commands (player_uid, command_id, action, expected_revision, response, crop, plot_id, animal_species, animal_id, partner_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-      [playerUid, command.commandId, command.action, command.expectedRevision, response, commandCrop, plotId, command.species ?? null, animalId, partnerId],
+      `INSERT INTO starter_farm_commands (player_uid, command_id, action, expected_revision, response, crop, plot_id, animal_species, animal_id, partner_id, building_kind)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+      [playerUid, command.commandId, command.action, command.expectedRevision, response, commandCrop, plotId, command.species ?? null, animalId, partnerId, command.building ?? null],
     );
     if (reason) {
       await client.query(
