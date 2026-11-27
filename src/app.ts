@@ -4,7 +4,6 @@ import { registerLeaderboardRoutes, type LeaderboardStore } from './leaderboard.
 import { millActions } from './mill.js';
 import { animalSpecies } from './livestock.js';
 import { crops, type FarmCommand, type FarmStore } from './farm.js';
-import type { FarmCommand, FarmStore } from './farm.js';
 import { registerWorldRoutes, type WorldStore } from './world.js';
 
 type FarmServices = {
@@ -55,7 +54,7 @@ export function createApp(services?: FarmServices, webOrigin?: string) {
   app.get('/healthz', async () => ({ status: 'ok' }));
   if (!services) return app;
 
-  if (webOrigin) app.register(cors, { origin: webOrigin });
+  if (webOrigin) app.register(cors, { origin: webOrigin, methods: ['GET', 'HEAD', 'POST', 'PUT'] });
 
   app.register(async (farmApi) => {
     farmApi.addHook('preHandler', async (request, reply) => {

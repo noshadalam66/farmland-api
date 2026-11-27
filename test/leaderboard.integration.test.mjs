@@ -18,7 +18,7 @@ test('harvest ranking uses committed actions and reveals only opted-in aliases',
       if (!players.includes(uid)) throw new Error('Unknown account');
       return { uid };
     },
-  });
+  }, 'https://farm.example');
   t.after(async () => {
     try {
       await app.close();
@@ -46,6 +46,16 @@ test('harvest ranking uses committed actions and reveals only opted-in aliases',
     );
   }
 
+  const preflight = await app.inject({
+    method: 'OPTIONS', url: '/v1/leaderboard/preferences',
+    headers: {
+      origin: 'https://farm.example',
+      'access-control-request-method': 'PUT',
+      'access-control-request-headers': 'authorization,content-type',
+    },
+  });
+  assert.equal(preflight.statusCode, 204);
+  assert.match(preflight.headers['access-control-allow-methods'], /\bPUT\b/);
   assert.equal((await read('invalid')).statusCode, 401);
   assert.equal((await read(privateFarm)).json().enabled, false);
   assert.equal((await preference(leader, true, { score: 999 })).statusCode, 400);
