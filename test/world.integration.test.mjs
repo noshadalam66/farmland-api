@@ -72,6 +72,34 @@ test('world selection is private, bounded, and safe to retry', async (t) => {
   const secondWorld = await request('same-account', { ...selection, requestId: randomUUID() });
   assert.equal(secondWorld.statusCode, 409);
   assert.equal(secondWorld.json().code, 'world_already_exists');
+
+  const replacement = {
+    ...selection, requestId: randomUUID(), replaceFailedRequestId: selection.requestId,
+    latitude: 37.77, longitude: -122.42,
+  };
+  assert.equal((await request('same-account', replacement)).statusCode, 409);
+  assert.equal((await request('other-account', replacement)).statusCode, 409);
+  await pool.query(
+    "UPDATE world_requests SET status = 'failed', failure_code = 'terrain_export_failed' WHERE player_uid = $1",
+    [playerUid],
+  );
+  assert.equal((await request('same-account', {
+    ...replacement, replaceFailedRequestId: randomUUID(),
+  })).statusCode, 409);
+
+  const retries = await Promise.all([
+    request('same-account', replacement),
+    request('same-account', replacement),
+  ]);
+  assert.deepEqual(retries.map((response) => response.statusCode).sort(), [200, 201]);
+  const recovered = retries[0].json();
+  assert.deepEqual(retries[1].json(), recovered);
+  assert.equal(recovered.worldId, world.worldId);
+  assert.equal(recovered.requestId, replacement.requestId);
+  assert.equal(recovered.latitude, replacement.latitude);
+  assert.equal(recovered.status, 'queued');
+  assert.equal(recovered.failureCode, null);
+  assert.equal((await request('same-account', selection)).statusCode, 409);
 });
 
 test('the terrain worker recovers an expired lease and serves the completed artifact to its owner', async (t) => {
