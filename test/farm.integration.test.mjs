@@ -6,7 +6,7 @@ import { createApp } from '../dist/app.js';
 import { FarmStore } from '../dist/farm.js';
 
 test('farm commands preserve progress across sessions and retries', async (t) => {
-  assert.ok(process.env.TEST_DATABASE_URL, 'Set TEST_DATABASE_URL to a test database with migrations 000002 and 000005.');
+  assert.ok(process.env.TEST_DATABASE_URL, 'Set TEST_DATABASE_URL to a test database with migrations 000002, 000005, and 000006.');
   const pool = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL });
   const playerUid = randomUUID();
   const otherUid = randomUUID();
@@ -131,5 +131,29 @@ test('farm commands preserve progress across sessions and retries', async (t) =>
   assert.equal(legacyReplay.statusCode, 200);
   assert.equal(legacyReplay.json().plot.crop, 'wheat');
   assert.deepEqual(legacyReplay.json().inventory, { wheat: 0, corn: 0, rice: 0 });
+
+  const newPlant = await submit('android', {
+    commandId: randomUUID(), expectedRevision: revision, action: 'plant', crop: 'rice',
+  });
+  assert.equal(newPlant.statusCode, 200);
+  const stocked = newPlant.json();
+  const sale = { commandId: randomUUID(), expectedRevision: stocked.revision, action: 'sell', crop: 'corn' };
+  assert.equal((await submit('android', { ...sale, crop: undefined })).statusCode, 400);
+  assert.equal((await submit('android', { ...sale, price: 1000 })).statusCode, 400);
+
+  const saleAttempt = await Promise.all([submit('android', sale), submit('web', sale)]);
+  for (const response of saleAttempt) assert.equal(response.statusCode, 200);
+  const sold = saleAttempt[0].json();
+  assert.deepEqual(sold, saleAttempt[1].json());
+  assert.equal(sold.wallet.coins, sold.market.sellPrices.corn);
+  assert.equal(sold.inventory.corn, 0);
+  assert.deepEqual(sold.plot, stocked.plot);
+
+  const rejectedSale = await submit('web', { ...sale, commandId: randomUUID(), expectedRevision: sold.revision });
+  assert.equal(rejectedSale.statusCode, 409);
+  assert.equal(rejectedSale.json().code, 'insufficient_crop');
+  assert.deepEqual((await load('ios')).json().wallet, sold.wallet);
+  const ledger = await pool.query('SELECT coin_delta, balance_after, reason FROM farm_wallet_entries WHERE player_uid = $1', [playerUid]);
+  assert.deepEqual(ledger.rows, [{ coin_delta: sold.wallet.coins, balance_after: sold.wallet.coins, reason: 'crop_sale' }]);
 
 });

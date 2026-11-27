@@ -19,7 +19,7 @@ Open pull requests against `main` after the initial bootstrap.
 ## Starter farm
 
 Apply migrations in `farmland-db` including `000002_starter_farms.sql` and
-`000005_crop_variety.sql`, set
+`000005_crop_variety.sql` and `000006_crop_market.sql`, set
 `DATABASE_URL` and `FIREBASE_PROJECT_ID`, and restart the server. For the Unity
 Web shell, set `WEB_ORIGIN` to the exact origin that serves it. With both required
 variables unset the service exposes only the health endpoint.
@@ -50,6 +50,12 @@ the crop that was planted. State includes `plot` (null or
 `{ crop, plantedAt, readyAt }`), inventory totals for each crop, `revision`,
 and `serverTime`. All times are UTC ISO 8601.
 
+Send `action: "sell"` with a crop to sell one harvested unit. The server
+deducts inventory and credits `wallet.coins` at the current
+`market.sellPrices[crop]`. The prototype prices are 3 for wheat, 5 for corn,
+and 7 for rice. Empty stock returns HTTP 409 with `insufficient_crop`.
+The wallet entry and command receipt commit together.
+
 After a lost response, retry the same command unchanged. The API returns the
 original committed snapshot, which may be older than the latest farm state.
 Refresh via GET before presenting the state after a retry. Conflicts return
@@ -57,7 +63,7 @@ HTTP 409 with `{ code, state }`, including the latest state as of the check.
 Rejected actions leave progress unchanged.
 
 Run `TEST_DATABASE_URL=postgresql://… npm run test:integration` against a test
-database with migrations 000002 and 000005 applied. The test runs actual PostgreSQL
+database with migrations 000002, 000005, and 000006 applied. The test runs actual PostgreSQL
 transactions and substitutes an in-process token verifier.
 
 ### Phase 1 service acceptance
