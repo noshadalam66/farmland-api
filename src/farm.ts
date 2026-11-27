@@ -1,4 +1,5 @@
 import type { Pool, PoolClient } from 'pg';
+import { animalCapacity, animalPrices, animalRosterExpression, purchaseAnimal, type Animal, type AnimalSpecies } from './livestock.js';
 
 export const crops = ['wheat', 'corn', 'rice'] as const;
 type Crop = typeof crops[number];
@@ -8,10 +9,11 @@ export type FarmCommand = {
   commandId: string;
   expectedRevision: number;
 } & (
-  | { action: 'plant'; crop?: Crop; plotId?: PlotId }
-  | { action: 'harvest'; crop?: never; plotId?: PlotId }
-  | { action: 'sell'; crop: Crop; plotId?: never }
-  | { action: 'buy_parcel'; crop?: never; plotId?: never }
+  | { action: 'plant'; species?: never; crop?: Crop; plotId?: PlotId }
+  | { action: 'harvest'; species?: never; crop?: never; plotId?: PlotId }
+  | { action: 'sell'; species?: never; crop: Crop; plotId?: never }
+  | { action: 'buy_parcel'; crop?: never; plotId?: never; species?: never }
+  | { action: 'buy_animal'; crop?: never; plotId?: never; species: AnimalSpecies }
 );
 
 type FarmRow = PlotRow & {
@@ -35,6 +37,7 @@ export type FarmState = {
   market: { sellPrices: Record<Crop, number> };
   plot: PlotState;
   expansion: { owned: boolean; price: number; plot: PlotState };
+  livestock: { animals: Animal[]; prices: Record<AnimalSpecies, number>; capacity: number };
   serverTime: string;
 };
 
@@ -42,17 +45,18 @@ type PlotState = { crop: Crop; plantedAt: string; readyAt: string } | null;
 
 type CommandResult =
   | { ok: true; state: FarmState }
-  | { ok: false; code: 'command_id_reused' | 'stale_revision' | 'plot_occupied' | 'plot_empty' | 'crop_not_ready' | 'insufficient_crop' | 'insufficient_coins' | 'parcel_already_owned' | 'parcel_not_owned'; state: FarmState };
+  | { ok: false; code: 'command_id_reused' | 'stale_revision' | 'plot_occupied' | 'plot_empty' | 'crop_not_ready' | 'insufficient_crop' | 'insufficient_coins' | 'parcel_already_owned' | 'parcel_not_owned' | 'livestock_capacity'; state: FarmState };
 
 const expansionPrice = 7;
 const sellPrices: Record<Crop, number> = { wheat: 3, corn: 5, rice: 7 };
 const growthMilliseconds: Record<Crop, number> = { wheat: 60_000, corn: 90_000, rice: 120_000 };
 
-type SavedFarmState = Omit<FarmState, 'inventory' | 'plot' | 'wallet' | 'market' | 'expansion'> & {
+type SavedFarmState = Omit<FarmState, 'inventory' | 'plot' | 'wallet' | 'market' | 'expansion' | 'livestock'> & {
   inventory: { wheat: number; corn?: number; rice?: number };
   wallet?: FarmState['wallet'];
   market?: FarmState['market'];
   expansion?: FarmState['expansion'];
+  livestock?: FarmState['livestock'];
   plot: { crop?: Crop; plantedAt: string; readyAt: string } | null;
 };
 
@@ -63,6 +67,7 @@ function readSavedState(state: SavedFarmState): FarmState {
     wallet: state.wallet ?? { coins: 0 },
     market: state.market ?? { sellPrices },
     expansion: state.expansion ?? { owned: false, price: expansionPrice, plot: null },
+    livestock: state.livestock ?? { animals: [], prices: animalPrices, capacity: animalCapacity },
     plot: state.plot ? { ...state.plot, crop: state.plot.crop ?? 'wheat' } : null,
   };
 }
@@ -72,13 +77,14 @@ function plotState(plot: PlotRow | undefined): PlotState {
   return { crop: plot.planted_crop, plantedAt: plot.planted_at.toISOString(), readyAt: plot.ready_at.toISOString() };
 }
 
-function snapshot(farm: FarmRow, now: Date, expansion?: PlotRow): FarmState {
+function snapshot(farm: FarmRow, now: Date, animals: Animal[], expansion?: PlotRow): FarmState {
   return {
     revision: farm.revision,
     inventory: { wheat: farm.wheat, corn: farm.corn, rice: farm.rice },
     wallet: { coins: farm.coins },
     market: { sellPrices },
     plot: plotState(farm),
+    livestock: { animals, prices: animalPrices, capacity: animalCapacity },
     expansion: { owned: expansion !== undefined, price: expansionPrice, plot: plotState(expansion) },
     serverTime: now.toISOString(),
   };
@@ -89,12 +95,13 @@ export class FarmStore {
 
   async load(playerUid: string): Promise<FarmState> {
     const { rows: [farm] } = await this.pool.query<FarmRow & { server_time: Date; expansion_owned: boolean; expansion_crop: Crop | null;
-      expansion_planted_at: Date | null; expansion_ready_at: Date | null }>(
+      expansion_planted_at: Date | null; expansion_ready_at: Date | null; animals: Animal[] }>(
       `SELECT COALESCE(farm.revision, 0) AS revision, COALESCE(farm.wheat, 0) AS wheat,
               COALESCE(farm.corn, 0) AS corn, COALESCE(farm.rice, 0) AS rice,
               COALESCE(farm.coins, 0) AS coins, farm.planted_at, farm.ready_at, farm.planted_crop, statement_timestamp() AS server_time,
               expansion.player_uid IS NOT NULL AS expansion_owned, expansion.planted_crop AS expansion_crop,
-              expansion.planted_at AS expansion_planted_at, expansion.ready_at AS expansion_ready_at
+              expansion.planted_at AS expansion_planted_at, expansion.ready_at AS expansion_ready_at,
+              ${animalRosterExpression} AS animals
        FROM (VALUES ($1::text)) AS player(uid)
        LEFT JOIN starter_farms AS farm ON farm.player_uid = player.uid
        LEFT JOIN farm_expansion_plots AS expansion ON expansion.player_uid = player.uid`,
@@ -103,7 +110,7 @@ export class FarmStore {
     const expansion = farm.expansion_owned ? {
       planted_crop: farm.expansion_crop, planted_at: farm.expansion_planted_at, ready_at: farm.expansion_ready_at,
     } : undefined;
-    return snapshot(farm, farm.server_time, expansion);
+    return snapshot(farm, farm.server_time, farm.animals, expansion);
   }
 
   async execute(playerUid: string, command: FarmCommand): Promise<CommandResult> {
@@ -139,15 +146,19 @@ export class FarmStore {
       'SELECT planted_crop, planted_at, ready_at FROM farm_expansion_plots WHERE player_uid = $1',
       [playerUid],
     );
-    const state = snapshot(farm, now, expansion);
+    const { rows: [{ animals }] } = await client.query<{ animals: Animal[] }>(
+      `SELECT ${animalRosterExpression} AS animals FROM (VALUES ($1::text)) AS player(uid)`, [playerUid],
+    );
+    const state = snapshot(farm, now, animals, expansion);
     const { rows: [previous] } = await client.query<{
       action: FarmCommand['action'];
       expected_revision: number;
       crop: Crop | null;
       plot_id: PlotId | null;
+      animal_species: AnimalSpecies | null;
       response: SavedFarmState;
     }>(
-      'SELECT action, expected_revision, crop, plot_id, response FROM starter_farm_commands WHERE player_uid = $1 AND command_id = $2',
+      'SELECT action, expected_revision, crop, plot_id, animal_species, response FROM starter_farm_commands WHERE player_uid = $1 AND command_id = $2',
       [playerUid, command.commandId],
     );
 
@@ -158,7 +169,7 @@ export class FarmStore {
       const previousCrop = previous.crop ?? (previous.action === 'plant' ? 'wheat' : null);
       const previousPlot = previous.plot_id ?? (previous.action === 'plant' || previous.action === 'harvest' ? 'starter' : null);
       if (previous.action !== command.action || previous.expected_revision !== command.expectedRevision ||
-          previousCrop !== commandCrop || previousPlot !== plotId) {
+          previousCrop !== commandCrop || previousPlot !== plotId || previous.animal_species !== (command.species ?? null)) {
         return { ok: false, code: 'command_id_reused', state };
       }
       return { ok: true, state: readSavedState(previous.response) };
@@ -179,10 +190,16 @@ export class FarmStore {
       if (farm.coins < expansionPrice) return { ok: false, code: 'insufficient_coins', state };
     }
 
+    if (command.action === 'buy_animal') {
+      if (animals.length >= animalCapacity) return { ok: false, code: 'livestock_capacity', state };
+      if (farm.coins < animalPrices[command.species]) return { ok: false, code: 'insufficient_coins', state };
+    }
+
     let coinDelta = 0;
     let reason: string | null = null;
     let updatedExpansion: PlotRow | undefined = expansion;
     let updated: FarmRow;
+    let updatedAnimals = animals;
     switch (command.action) {
       case 'sell':
         coinDelta = sellPrices[command.crop];
@@ -196,13 +213,15 @@ export class FarmStore {
           'INSERT INTO farm_expansion_plots (player_uid) VALUES ($1) RETURNING *', [playerUid],
         );
         updatedExpansion = bought;
-        const { rows: [debited] } = await client.query<FarmRow>(
-          'UPDATE starter_farms SET coins = coins + $2, revision = revision + 1 WHERE player_uid = $1 RETURNING *',
-          [playerUid, coinDelta],
-        );
-        updated = debited;
+        updated = await this.debitWallet(client, playerUid, coinDelta);
         break;
       }
+      case 'buy_animal':
+        coinDelta = -animalPrices[command.species];
+        reason = 'animal_purchase';
+        updatedAnimals = [...animals, await purchaseAnimal(client, playerUid, command.species)];
+        updated = await this.debitWallet(client, playerUid, coinDelta);
+        break;
       default: {
         const plantCrop = command.action === 'plant' ? commandCrop : null;
         const harvestedCrop = command.action === 'harvest' ? plot?.planted_crop ?? null : null;
@@ -222,11 +241,11 @@ export class FarmStore {
         updated = await this.updatePlot(client, playerUid, harvestedCrop, plotId === 'starter', times);
       }
     }
-    const response = snapshot(updated, now, updatedExpansion);
+    const response = snapshot(updated, now, updatedAnimals, updatedExpansion);
     await client.query(
-      `INSERT INTO starter_farm_commands (player_uid, command_id, action, expected_revision, response, crop, plot_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      [playerUid, command.commandId, command.action, command.expectedRevision, response, commandCrop, plotId],
+      `INSERT INTO starter_farm_commands (player_uid, command_id, action, expected_revision, response, crop, plot_id, animal_species)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [playerUid, command.commandId, command.action, command.expectedRevision, response, commandCrop, plotId, command.species ?? null],
     );
     if (reason) {
       await client.query(
@@ -236,6 +255,14 @@ export class FarmStore {
       );
     }
     return { ok: true, state: response };
+  }
+
+  private async debitWallet(client: PoolClient, playerUid: string, coinDelta: number) {
+    const { rows: [updated] } = await client.query<FarmRow>(
+      'UPDATE starter_farms SET coins = coins + $2, revision = revision + 1 WHERE player_uid = $1 RETURNING *',
+      [playerUid, coinDelta],
+    );
+    return updated;
   }
 
   private async sellCrop(client: PoolClient, playerUid: string, crop: Crop, price: number) {

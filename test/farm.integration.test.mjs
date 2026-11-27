@@ -6,7 +6,7 @@ import { createApp } from '../dist/app.js';
 import { FarmStore } from '../dist/farm.js';
 
 test('farm commands preserve progress across sessions and retries', async (t) => {
-  assert.ok(process.env.TEST_DATABASE_URL, 'Set TEST_DATABASE_URL to a test database with migrations 000002 and 000005–000007.');
+  assert.ok(process.env.TEST_DATABASE_URL, 'Set TEST_DATABASE_URL to a test database with migrations 000002 and 000005–000008.');
   const pool = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL });
   const playerUid = randomUUID();
   const otherUid = randomUUID();
@@ -197,5 +197,38 @@ test('farm commands preserve progress across sessions and retries', async (t) =>
   assert.equal(harvestExpansion.json().inventory.corn, 1);
   assert.equal(harvestExpansion.json().expansion.plot, null);
   assert.deepEqual(harvestExpansion.json().plot, expanded.plot);
+
+
+  const postHarvest = harvestExpansion.json();
+  const buyChicken = { commandId: randomUUID(), expectedRevision: postHarvest.revision,
+    action: 'buy_animal', species: 'chicken' };
+  assert.equal((await submit('android', { ...buyChicken, species: 'cow' })).statusCode, 400);
+  assert.equal((await submit('android', { ...buyChicken, price: 0 })).statusCode, 400);
+  const soldCorn = await submit('android', { commandId: randomUUID(), expectedRevision: postHarvest.revision,
+    action: 'sell', crop: 'corn' });
+  const available = soldCorn.json();
+  const purchaseAnimal = { ...buyChicken, expectedRevision: available.revision };
+  const livestockPurchase = await Promise.all([submit('android', purchaseAnimal), submit('web', purchaseAnimal)]);
+  assert.deepEqual(livestockPurchase.map((response) => response.statusCode), [200, 200]);
+  const animalState = livestockPurchase[0].json();
+  assert.deepEqual(livestockPurchase[1].json(), animalState);
+  assert.equal(animalState.livestock.animals.length, 1);
+  assert.equal(animalState.livestock.animals[0].species, 'chicken');
+  assert.equal(animalState.wallet.coins, available.wallet.coins - available.livestock.prices.chicken);
+  assert.deepEqual((await load('ios')).json().livestock, animalState.livestock);
+  assert.deepEqual((await load('other')).json().livestock.animals, []);
+
+  const goat = { commandId: randomUUID(), expectedRevision: animalState.revision, action: 'buy_animal', species: 'goat' };
+  assert.equal((await submit('ios', goat)).json().code, 'insufficient_coins');
+  await pool.query('UPDATE starter_farms SET coins = $2 WHERE player_uid = $1', [playerUid, animalState.livestock.prices.goat]);
+  const goats = await submit('ios', goat);
+  assert.equal(goats.statusCode, 200);
+  assert.deepEqual(goats.json().livestock.animals.map((animal) => animal.species), ['chicken', 'goat']);
+
+  const animalDebits = await pool.query(
+    "SELECT coin_delta FROM farm_wallet_entries WHERE player_uid = $1 AND reason = 'animal_purchase' ORDER BY coin_delta",
+    [playerUid],
+  );
+  assert.deepEqual(animalDebits.rows, [{ coin_delta: -12 }, { coin_delta: -6 }]);
 
 });
