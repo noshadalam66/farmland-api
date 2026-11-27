@@ -1,5 +1,6 @@
 import cors from '@fastify/cors';
 import Fastify from 'fastify';
+import { registerLeaderboardRoutes, type LeaderboardStore } from './leaderboard.js';
 import { millActions } from './mill.js';
 import { animalSpecies } from './livestock.js';
 import { crops, type FarmCommand, type FarmStore } from './farm.js';
@@ -8,6 +9,7 @@ import { registerWorldRoutes, type WorldStore } from './world.js';
 
 type FarmServices = {
   store: Pick<FarmStore, 'load' | 'execute'>;
+  leaderboard?: LeaderboardStore;
   worldStore?: WorldStore;
   terrainRoot?: string;
   verifyToken: (token: string) => Promise<{ uid: string }>;
@@ -68,6 +70,7 @@ export function createApp(services?: FarmServices, webOrigin?: string) {
       }
     });
     farmApi.decorateRequest('playerUid', '');
+    if (services.leaderboard) registerLeaderboardRoutes(farmApi, services.leaderboard);
     if (services.worldStore) registerWorldRoutes(farmApi, services.worldStore, services.terrainRoot);
     farmApi.get('/farm', async (request) => services.store.load(request.playerUid));
     farmApi.post<{ Body: FarmCommand }>('/farm/commands', {
