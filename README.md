@@ -176,3 +176,11 @@ residents served, and a 0–100 wellbeing score. The score is zero until
 residents arrive, then starts at 40 and adds up to 15 points each for water,
 employment, school, and clinic coverage. Existing cottage arrival rules
 still apply.
+
+
+Migration 000015 adds daily settlement supply orders. `townOrders` reports
+the UTC date, offers, prerequisites, and which offers have been filled. Send
+`fulfil_town_order` with the offer's `orderKey` and displayed `orderDate`.
+Wheat, flour, and milk offers unlock at two, three, and four residents.
+Each offer can be fulfilled once per UTC day. Changes to inventory, coins,
+and the receipt commit together.
