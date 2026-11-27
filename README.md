@@ -53,7 +53,7 @@ HTTP 409 with `{ code, state }`, including the latest state as of the check.
 Rejected actions leave progress unchanged.
 
 Run `TEST_DATABASE_URL=postgresql://… npm run test:integration` against a test
-database with migrations 000002 and 000003 applied. The test runs actual PostgreSQL
+database with migrations 000002 through 000004 applied. The test runs actual PostgreSQL
 transactions and substitutes an in-process token verifier.
 
 ### Phase 1 service acceptance
@@ -80,7 +80,7 @@ The Unity Play Mode and device handoff checks are separate.
 
 ## World selection
 
-Apply migration `000003_world_requests.sql` from `farmland-db`. Authenticate
+Apply world migrations `000003` and `000004` from `farmland-db`. Authenticate
 with the same Firebase account as the farm endpoints.
 
 - `POST /v1/world` accepts `{ requestId, latitude, longitude, areaKm2 }`.
@@ -92,6 +92,14 @@ with the same Firebase account as the farm endpoints.
   different inputs or submitting another world for the account returns HTTP 409.
 - `GET /v1/world` returns the caller's world or HTTP 404 if they have no world.
 
-One selection per account is supported in the pilot. This migration persists
-the generation request. Terrain processing will consume queued requests in
-a subsequent change.
+One selection per account is supported in the pilot. Run one terrain job with `npm run terrain:once` after `npm run build`.
+Set `DATABASE_URL`, `TERRAIN_ROOT`, `TERRAIN_SOURCE` (the raster file path),
+and `TERRAIN_SOURCE_ID` (a versioned dataset reference). Set `TERRAIN_PYTHON`
+if the GDAL bindings are installed in a different Python interpreter.
+A worker can reclaim an interrupted job after its five-minute lease.
+
+Set the same `TERRAIN_ROOT` on the API with read access to the worker's output.
+For a ready world, the authenticated owner can GET
+`/v1/world/terrain/manifest.json` and the named chunks under
+`/v1/world/terrain/`. This pilot uses shared local storage and one operator-
+selected source raster.

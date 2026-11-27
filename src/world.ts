@@ -1,3 +1,5 @@
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import type { Pool } from 'pg';
 
@@ -12,6 +14,7 @@ type WorldRequest = WorldSelection & {
   worldId: string;
   status: 'queued' | 'generating' | 'ready' | 'failed';
   createdAt: Date;
+  failureCode: string | null;
 };
 
 const selectionSchema = {
@@ -27,7 +30,7 @@ const selectionSchema = {
 } as const;
 
 const worldColumns = `world_id AS "worldId", request_id AS "requestId",
-  latitude, longitude, area_km2 AS "areaKm2", status, created_at AS "createdAt"`;
+  latitude, longitude, area_km2 AS "areaKm2", status, created_at AS "createdAt", failure_code AS "failureCode"`;
 
 export class WorldStore {
   constructor(private readonly pool: Pool) {}
@@ -38,6 +41,17 @@ export class WorldStore {
       [playerUid],
     );
     return rows[0];
+  }
+
+  async loadArtifact(playerUid: string) {
+    const { rows: [artifact] } = await this.pool.query<{
+      worldId: string; artifactId: string; areaKm2: number;
+    }>(
+      `SELECT world_id AS "worldId", artifact_id AS "artifactId", area_km2 AS "areaKm2"
+       FROM world_requests WHERE player_uid = $1 AND status = 'ready'`,
+      [playerUid],
+    );
+    return artifact;
   }
 
   async queue(playerUid: string, selection: WorldSelection) {
@@ -55,12 +69,35 @@ export class WorldStore {
   }
 }
 
-export function registerWorldRoutes(api: FastifyInstance, store: WorldStore) {
+export function registerWorldRoutes(api: FastifyInstance, store: WorldStore, terrainRoot?: string) {
   api.get('/world', async (request, reply) => {
     const world = await store.load(request.playerUid);
     if (!world) return reply.code(404).send({ code: 'world_not_found' });
     return world;
   });
+
+  if (terrainRoot) {
+    api.get<{ Params: { filename: string } }>('/world/terrain/:filename', async (request, reply) => {
+      const artifact = await store.loadArtifact(request.playerUid);
+      const { filename } = request.params;
+      const chunk = /^height-([0-2])-([0-2])\.f32$/.exec(filename);
+      const chunksPerAxis = artifact ? Math.sqrt(artifact.areaKm2) : 0;
+      const validChunk = chunk && Number(chunk[1]) < chunksPerAxis && Number(chunk[2]) < chunksPerAxis;
+      if (!artifact || (filename !== 'manifest.json' && !validChunk)) {
+        return reply.code(404).send({ code: 'terrain_not_found' });
+      }
+
+      const path = join(terrainRoot, artifact.worldId, artifact.artifactId, filename);
+      try {
+        const contents = await readFile(path);
+        const type = filename === 'manifest.json' ? 'application/json' : 'application/octet-stream';
+        return reply.type(type).send(contents);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        return reply.code(503).send({ code: 'terrain_unavailable' });
+      }
+    });
+  }
 
   api.post<{ Body: WorldSelection }>('/world', {
     schema: { body: selectionSchema },

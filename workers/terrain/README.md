@@ -20,5 +20,5 @@ source vertical datum. The local horizontal grid is centered on the requested
 coordinates. Adjacent tiles share a boundary row or column. The manifest gives
 the local CRS, origin, spacing, dataset version, and chunk filenames.
 
-This exporter runs locally. A later pipeline step will claim queued requests,
-select an approved source raster, publish its output, and record the result.
+The API repository README describes the one-job runner and authenticated file retrieval.
+Select a licensed pilot raster that covers the requested world.
