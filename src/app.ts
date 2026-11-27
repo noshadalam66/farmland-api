@@ -1,5 +1,6 @@
 import cors from '@fastify/cors';
 import Fastify from 'fastify';
+import { millActions } from './mill.js';
 import { animalSpecies } from './livestock.js';
 import { crops, type FarmCommand, type FarmStore } from './farm.js';
 
@@ -15,7 +16,7 @@ const commandSchema = {
   properties: {
     commandId: { type: 'string', pattern: '^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$' },
     expectedRevision: { type: 'integer', minimum: 0, maximum: 2147483647 },
-    action: { type: 'string', enum: ['plant', 'harvest', 'sell', 'buy_parcel', 'buy_animal', 'feed_animal', 'collect_animal', 'start_breeding', 'collect_offspring'] },
+    action: { type: 'string', enum: ['plant', 'harvest', 'sell', 'buy_parcel', 'buy_animal', 'feed_animal', 'collect_animal', 'start_breeding', 'collect_offspring', ...millActions] },
     crop: { type: 'string', enum: crops },
     animalId: { type: 'string', pattern: '^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$' },
     partnerId: { type: 'string', pattern: '^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$' },
@@ -25,7 +26,7 @@ const commandSchema = {
   allOf: [
     { if: { properties: { action: { const: 'start_breeding' } } },
       then: { required: ['partnerId'] }, else: { not: { required: ['partnerId'] } } },
-    { if: { properties: { action: { const: 'collect_offspring' } } },
+    { if: { properties: { action: { enum: ['collect_offspring', ...millActions] } } },
       then: { not: { anyOf: [{ required: ['crop'] }, { required: ['plotId'] }] } } },
     { if: { properties: { action: { enum: ['feed_animal', 'collect_animal', 'start_breeding'] } } },
       then: { required: ['animalId'], not: { anyOf: [{ required: ['crop'] }, { required: ['plotId'] }] } },

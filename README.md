@@ -18,9 +18,8 @@ Open pull requests against `main` after the initial bootstrap.
 
 ## Starter farm
 
-Apply migrations in `farmland-db` including `000002_starter_farms.sql` and
-`000005_crop_variety.sql` `000006_crop_market.sql`, `000007_farm_expansion.sql`, `000008_livestock.sql`, `000009_animal_production.sql`, and `000010_breeding.sql`, set
-`DATABASE_URL` and `FIREBASE_PROJECT_ID`, and restart the server. For the Unity
+Apply farm migrations 000002 and 000005–000011 from `farmland-db`. Set
+`DATABASE_URL` and `FIREBASE_PROJECT_ID`, then restart the server. For the Unity
 Web shell, set `WEB_ORIGIN` to the exact origin that serves it. With both required
 variables unset the service exposes only the health endpoint.
 
@@ -87,8 +86,12 @@ Refresh via GET before presenting the state after a retry. Conflicts return
 HTTP 409 with `{ code, state }`, including the latest state as of the check.
 Rejected actions leave progress unchanged.
 
+The grain mill supports `buy_mill`, `start_milling`, `collect_flour`, and
+`sell_flour`. It processes two wheat per 60-second batch. The `mill` snapshot
+supplies prices and the batch timer.
+
 Run `TEST_DATABASE_URL=postgresql://… npm run test:integration` against a test
-database with migrations 000002 and 000005–000010 applied. The test runs actual PostgreSQL
+database with migrations 000002 and 000005–000011 applied. The test runs actual PostgreSQL
 transactions and substitutes an in-process token verifier.
 
 ### Phase 1 service acceptance
