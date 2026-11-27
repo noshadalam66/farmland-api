@@ -105,6 +105,9 @@ test('the terrain worker recovers an expired lease and serves the completed arti
     await mkdir(path);
     await writeFile(join(path, 'manifest.json'), '{"version":1}');
     await writeFile(join(path, 'height-0-0.f32'), Buffer.alloc(33 * 33 * 4));
+    if (process.argv.includes('--water-source')) {
+      await writeFile(join(path, 'water-0-0.u8'), Buffer.alloc(33 * 33, 1));
+    }
   `);
   await store.queue(playerUid, { requestId: randomUUID(), latitude: 25, longitude: 51, areaKm2: 1 });
   await pool.query(
@@ -113,7 +116,8 @@ test('the terrain worker recovers an expired lease and serves the completed arti
     [playerUid],
   );
 
-  const config = { root: terrainRoot, source: 'fixture', sourceId: 'fixture/1', python: process.execPath, exporter };
+  const config = { root: terrainRoot, source: 'fixture', sourceId: 'fixture/1', python: process.execPath, exporter,
+    water: { source: 'water-fixture', sourceId: 'water-fixture/1' } };
   const results = await Promise.all([processTerrainJob(pool, config), processTerrainJob(pool, config)]);
   assert.deepEqual(results.sort(), ['idle', 'ready']);
 
@@ -125,6 +129,10 @@ test('the terrain worker recovers an expired lease and serves the completed arti
   assert.equal(chunk.rawPayload.length, 33 * 33 * 4);
   assert.equal((await get(playerUid, '/v1/world/terrain/height-0-1.f32')).statusCode, 404);
   assert.equal((await get(otherUid, '/v1/world/terrain/manifest.json')).statusCode, 404);
+  const water = await get(playerUid, '/v1/world/terrain/water-0-0.u8');
+  assert.equal(water.statusCode, 200);
+  assert.deepEqual(water.rawPayload, Buffer.alloc(33 * 33, 1));
+  assert.equal((await get(otherUid, '/v1/world/terrain/water-0-0.u8')).statusCode, 404);
 
   await store.queue(otherUid, { requestId: randomUUID(), latitude: 0, longitude: 0, areaKm2: 1 });
   assert.equal(await processTerrainJob(pool, { ...config, exporter: join(directory, 'missing.mjs') }), 'failed');

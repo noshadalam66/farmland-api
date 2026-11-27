@@ -55,3 +55,20 @@ This checks elevation and delivery. A separate water mask is required to
 classify coastlines and water, and Unity rendering still requires Play Mode.
 
 Data source: [USGS 3DEP 1/3 arc-second DEM catalog](https://data.usgs.gov/datacatalog/data/USGS%3A3a81321b-c153-416f-98b7-cc8e5f0e17c3).
+
+## Optional water classification
+
+Provide a licensed, single-layer Polygon or MultiPolygon dataset with a
+defined CRS and coverage of the pilot area. Pass `--water-source` and
+`--water-source-id` to the exporter, or set `TERRAIN_WATER_SOURCE` and
+`TERRAIN_WATER_SOURCE_ID` on the job runner. Use polygons representing water,
+including a marine polygon if the pilot crosses a coastline.
+
+The exporter projects the polygons onto the same grid as the elevation
+samples. The manifest includes optional `waterMask` metadata and a
+`waterFile` for each chunk. Each file contains unsigned bytes in elevation
+sample order, with 1 inside mapped water and 0 outside. Coverage gaps in the
+polygon source are indistinguishable from land, so validate the dataset
+extent before enabling this layer. Older elevation-only packages keep
+their existing format. The API serves masks through the owner's terrain
+route. The Unity renderer still needs to consume the optional mask.

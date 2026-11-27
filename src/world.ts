@@ -80,7 +80,8 @@ export function registerWorldRoutes(api: FastifyInstance, store: WorldStore, ter
     api.get<{ Params: { filename: string } }>('/world/terrain/:filename', async (request, reply) => {
       const artifact = await store.loadArtifact(request.playerUid);
       const { filename } = request.params;
-      const chunk = /^height-([0-2])-([0-2])\.f32$/.exec(filename);
+      const waterFile = filename.startsWith('water-');
+      const chunk = (waterFile ? /^water-([0-2])-([0-2])\.u8$/ : /^height-([0-2])-([0-2])\.f32$/).exec(filename);
       const chunksPerAxis = artifact ? Math.sqrt(artifact.areaKm2) : 0;
       const validChunk = chunk && Number(chunk[1]) < chunksPerAxis && Number(chunk[2]) < chunksPerAxis;
       if (!artifact || (filename !== 'manifest.json' && !validChunk)) {
@@ -94,6 +95,7 @@ export function registerWorldRoutes(api: FastifyInstance, store: WorldStore, ter
         return reply.type(type).send(contents);
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        if (waterFile) return reply.code(404).send({ code: 'terrain_not_found' });
         return reply.code(503).send({ code: 'terrain_unavailable' });
       }
     });

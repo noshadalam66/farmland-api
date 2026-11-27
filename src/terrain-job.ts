@@ -19,6 +19,7 @@ export type TerrainJobConfig = {
   sourceId: string;
   python: string;
   exporter: string;
+  water?: { source: string; sourceId: string };
 };
 
 const run = promisify(execFile);
@@ -54,6 +55,7 @@ export async function processTerrainJob(pool: Pool, config: TerrainJobConfig) {
       config.exporter, config.source, output, '--source-id', config.sourceId,
       '--latitude', String(job.latitude), '--longitude', String(job.longitude),
       '--area-km2', String(job.areaKm2),
+      ...(config.water ? ['--water-source', config.water.source, '--water-source-id', config.water.sourceId] : []),
     ], { timeout: 120_000, killSignal: 'SIGKILL' });
   } catch {
     failureCode = 'terrain_export_failed';

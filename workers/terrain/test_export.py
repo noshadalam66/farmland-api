@@ -4,7 +4,7 @@ from tempfile import TemporaryDirectory
 import unittest
 
 import numpy as np
-from osgeo import gdal, osr
+from osgeo import gdal, ogr, osr
 
 from export import export
 
@@ -39,6 +39,27 @@ class TerrainExportTest(unittest.TestCase):
             self.assertLess(northwest[0, 0], northwest[-1, -1])
             np.testing.assert_array_equal(northwest[:, -1], heights(1, 0)[:, 0])
             np.testing.assert_array_equal(northwest[-1, :], heights(0, 1)[0, :])
+
+            water_source = root / "water.gpkg"
+            vector = ogr.GetDriverByName("GPKG").CreateDataSource(str(water_source))
+            layer = vector.CreateLayer("water", crs, ogr.wkbPolygon)
+            feature = ogr.Feature(layer.GetLayerDefn())
+            feature.SetGeometry(ogr.CreateGeometryFromWkt(
+                "POLYGON ((-1600 -1600,250 -1600,250 1600,-1600 1600,-1600 -1600))"
+            ))
+            self.assertEqual(layer.CreateFeature(feature), ogr.OGRERR_NONE)
+            vector = None
+
+            masked = root / "masked"
+            export(src, "test-dem/1", 25, 51, 4, masked, water_source, "test-water/1")
+            masked_manifest = json.loads((masked / "manifest.json").read_text())
+            self.assertEqual(masked_manifest["waterMask"]["sourceId"], "test-water/1")
+            self.assertEqual(masked_manifest["chunks"][0]["waterFile"], "water-0-0.u8")
+            west = np.fromfile(masked / "water-0-0.u8", dtype=np.uint8).reshape(33, 33)
+            east = np.fromfile(masked / "water-1-0.u8", dtype=np.uint8).reshape(33, 33)
+            self.assertTrue(np.all(west == 1))
+            self.assertTrue(np.all(east[:, -1] == 0))
+            np.testing.assert_array_equal(west[:, -1], east[:, 0])
 
             missing = root / "missing"
             with self.assertRaisesRegex(ValueError, "does not cover"):
