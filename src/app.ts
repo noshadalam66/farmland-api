@@ -1,6 +1,6 @@
 import cors from '@fastify/cors';
 import Fastify from 'fastify';
-import type { FarmCommand, FarmStore } from './farm.js';
+import { crops, type FarmCommand, type FarmStore } from './farm.js';
 
 type FarmServices = {
   store: Pick<FarmStore, 'load' | 'execute'>;
@@ -15,7 +15,10 @@ const commandSchema = {
     commandId: { type: 'string', pattern: '^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$' },
     expectedRevision: { type: 'integer', minimum: 0, maximum: 2147483647 },
     action: { type: 'string', enum: ['plant', 'harvest'] },
+    crop: { type: 'string', enum: crops },
   },
+  if: { properties: { action: { const: 'harvest' } } },
+  then: { not: { required: ['crop'] } },
 } as const;
 
 export function createApp(services?: FarmServices, webOrigin?: string) {

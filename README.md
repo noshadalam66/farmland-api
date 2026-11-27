@@ -18,7 +18,8 @@ Open pull requests against `main` after the initial bootstrap.
 
 ## Starter farm
 
-Apply migrations in `farmland-db` through `000002_starter_farms.sql`, set
+Apply migrations in `farmland-db` including `000002_starter_farms.sql` and
+`000005_crop_variety.sql`, set
 `DATABASE_URL` and `FIREBASE_PROJECT_ID`, and restart the server. For the Unity
 Web shell, set `WEB_ORIGIN` to the exact origin that serves it. With both required
 variables unset the service exposes only the health endpoint.
@@ -42,9 +43,12 @@ A command body looks like this:
 ```
 
 Use the revision from the latest state and a fresh UUID for each new action.
-`plant` starts a 60-second wheat timer and `harvest` clears a ready plot and
-adds one wheat. State includes `plot` (null or `{ plantedAt, readyAt }`),
-`inventory.wheat`, `revision`, and `serverTime`. All times are UTC ISO 8601.
+For `plant`, add a `crop` of `wheat`, `corn`, or `rice`. Omitting it plants
+wheat. The prototype uses 60, 90, and 120 second timers respectively.
+`harvest` takes no crop parameter. It clears the ready plot and adds one of
+the crop that was planted. State includes `plot` (null or
+`{ crop, plantedAt, readyAt }`), inventory totals for each crop, `revision`,
+and `serverTime`. All times are UTC ISO 8601.
 
 After a lost response, retry the same command unchanged. The API returns the
 original committed snapshot, which may be older than the latest farm state.
@@ -53,7 +57,7 @@ HTTP 409 with `{ code, state }`, including the latest state as of the check.
 Rejected actions leave progress unchanged.
 
 Run `TEST_DATABASE_URL=postgresql://… npm run test:integration` against a test
-database with migration 000002 applied. The test runs actual PostgreSQL
+database with migrations 000002 and 000005 applied. The test runs actual PostgreSQL
 transactions and substitutes an in-process token verifier.
 
 ### Phase 1 service acceptance
@@ -61,7 +65,7 @@ transactions and substitutes an in-process token verifier.
 Run Firebase Authentication Emulator for a `demo-*` project and start this API
 with the matching `FIREBASE_PROJECT_ID`, `FIREBASE_AUTH_EMULATOR_HOST`
 (for example, `127.0.0.1:9099`), and a disposable PostgreSQL database with the
-farm migration applied. The Admin SDK uses emulator mode when this variable
+farm migrations applied. The Admin SDK uses emulator mode when this variable
 is set. Keep it out of deployments.
 
 In a second terminal, use the same Firebase values and set
