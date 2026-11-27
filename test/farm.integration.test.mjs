@@ -6,7 +6,7 @@ import { createApp } from '../dist/app.js';
 import { FarmStore } from '../dist/farm.js';
 
 test('farm commands preserve progress across sessions and retries', async (t) => {
-  assert.ok(process.env.TEST_DATABASE_URL, 'Set TEST_DATABASE_URL to a test database with migrations 000002 and 000005–000007.');
+  assert.ok(process.env.TEST_DATABASE_URL, 'Set TEST_DATABASE_URL to a test database with migrations 000002 and 000005–000011.');
   const pool = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL });
   const playerUid = randomUUID();
   const otherUid = randomUUID();
@@ -88,7 +88,7 @@ test('farm commands preserve progress across sessions and retries', async (t) =>
 
   const final = (await load('android')).json();
   assert.equal(final.revision, 2);
-  assert.deepEqual(final.inventory, { wheat: 1, corn: 0, rice: 0 });
+  assert.deepEqual(final.inventory, { wheat: 1, corn: 0, rice: 0, milk: 0, eggs: 0, flour: 0 });
   assert.equal(final.plot, null);
 
   let revision = final.revision;
@@ -119,7 +119,7 @@ test('farm commands preserve progress across sessions and retries', async (t) =>
     assert.deepEqual((await submit('android', harvestCrop)).json(), collected.json());
     revision = collected.json().revision;
   }
-  assert.deepEqual((await load('android')).json().inventory, { wheat: 1, corn: 1, rice: 1 });
+  assert.deepEqual((await load('android')).json().inventory, { wheat: 1, corn: 1, rice: 1, milk: 0, eggs: 0, flour: 0 });
 
   const legacyReceipt = { ...plantState, inventory: { wheat: 0 },
     plot: { plantedAt: plantState.plot.plantedAt, readyAt: plantState.plot.readyAt } };
@@ -130,7 +130,7 @@ test('farm commands preserve progress across sessions and retries', async (t) =>
   const legacyReplay = await submit('web', { ...plant, crop: 'wheat' });
   assert.equal(legacyReplay.statusCode, 200);
   assert.equal(legacyReplay.json().plot.crop, 'wheat');
-  assert.deepEqual(legacyReplay.json().inventory, { wheat: 0, corn: 0, rice: 0 });
+  assert.deepEqual(legacyReplay.json().inventory, { wheat: 0, corn: 0, rice: 0, milk: 0, eggs: 0, flour: 0 });
 
   const newPlant = await submit('android', {
     commandId: randomUUID(), expectedRevision: revision, action: 'plant', crop: 'rice',
@@ -197,5 +197,157 @@ test('farm commands preserve progress across sessions and retries', async (t) =>
   assert.equal(harvestExpansion.json().inventory.corn, 1);
   assert.equal(harvestExpansion.json().expansion.plot, null);
   assert.deepEqual(harvestExpansion.json().plot, expanded.plot);
+
+
+  const postHarvest = harvestExpansion.json();
+  const buyChicken = { commandId: randomUUID(), expectedRevision: postHarvest.revision,
+    action: 'buy_animal', species: 'chicken' };
+  assert.equal((await submit('android', { ...buyChicken, species: 'cow' })).statusCode, 400);
+  assert.equal((await submit('android', { ...buyChicken, price: 0 })).statusCode, 400);
+  const soldCorn = await submit('android', { commandId: randomUUID(), expectedRevision: postHarvest.revision,
+    action: 'sell', crop: 'corn' });
+  const available = soldCorn.json();
+  const purchaseAnimal = { ...buyChicken, expectedRevision: available.revision };
+  const livestockPurchase = await Promise.all([submit('android', purchaseAnimal), submit('web', purchaseAnimal)]);
+  assert.deepEqual(livestockPurchase.map((response) => response.statusCode), [200, 200]);
+  const animalState = livestockPurchase[0].json();
+  assert.deepEqual(livestockPurchase[1].json(), animalState);
+  assert.equal(animalState.livestock.animals.length, 1);
+  assert.equal(animalState.livestock.animals[0].species, 'chicken');
+  assert.equal(animalState.wallet.coins, available.wallet.coins - available.livestock.prices.chicken);
+  assert.deepEqual((await load('ios')).json().livestock, animalState.livestock);
+  assert.deepEqual((await load('other')).json().livestock.animals, []);
+
+  const goat = { commandId: randomUUID(), expectedRevision: animalState.revision, action: 'buy_animal', species: 'goat' };
+  assert.equal((await submit('ios', goat)).json().code, 'insufficient_coins');
+  await pool.query('UPDATE starter_farms SET coins = $2 WHERE player_uid = $1', [playerUid, animalState.livestock.prices.goat]);
+  const goats = await submit('ios', goat);
+  assert.equal(goats.statusCode, 200);
+  assert.deepEqual(goats.json().livestock.animals.map((animal) => animal.species), ['chicken', 'goat']);
+
+  const animalDebits = await pool.query(
+    "SELECT coin_delta FROM farm_wallet_entries WHERE player_uid = $1 AND reason = 'animal_purchase' ORDER BY coin_delta",
+    [playerUid],
+  );
+  assert.deepEqual(animalDebits.rows, [{ coin_delta: -12 }, { coin_delta: -6 }]);
+
+  const roster = goats.json();
+  const chickenId = roster.livestock.animals[0].animalId;
+  const goatId = roster.livestock.animals[1].animalId;
+  const feed = { commandId: randomUUID(), expectedRevision: roster.revision, action: 'feed_animal', animalId: chickenId };
+  assert.equal((await submit('web', { ...feed, animalId: randomUUID() })).json().code, 'animal_not_owned');
+  assert.equal((await submit('web', { ...feed, animalId: 'invalid' })).statusCode, 400);
+  const fedChicken = await submit('android', feed);
+  assert.equal(fedChicken.statusCode, 200);
+  const feeding = fedChicken.json();
+  assert.equal(feeding.inventory.wheat, roster.inventory.wheat - 1);
+  assert.equal(Date.parse(feeding.livestock.animals[0].productReadyAt) - Date.parse(feeding.serverTime), 60_000);
+  assert.deepEqual((await submit('web', feed)).json(), feeding);
+  assert.deepEqual((await load('ios')).json().livestock, feeding.livestock);
+  const collect = { ...feed, commandId: randomUUID(), expectedRevision: feeding.revision, action: 'collect_animal' };
+  assert.equal((await submit('ios', collect)).json().code, 'product_not_ready');
+  assert.equal((await submit('ios', { ...feed, commandId: randomUUID(), expectedRevision: feeding.revision })).json().code,
+    'animal_already_fed');
+
+  await pool.query("UPDATE farm_animals SET product_ready_at = now() - interval '1 second' WHERE animal_id = $1", [chickenId]);
+  const eggs = await submit('ios', collect);
+  assert.equal(eggs.statusCode, 200);
+  assert.equal(eggs.json().inventory.eggs, 1);
+  assert.equal(eggs.json().livestock.animals[0].productReadyAt, null);
+  assert.deepEqual((await submit('android', collect)).json(), eggs.json());
+
+  const feedGoat = { ...feed, commandId: randomUUID(), expectedRevision: eggs.json().revision, animalId: goatId };
+  assert.equal((await submit('web', feedGoat)).json().code, 'insufficient_crop');
+  await pool.query('UPDATE starter_farms SET wheat = 1 WHERE player_uid = $1', [playerUid]);
+  const fedGoat = await submit('web', feedGoat);
+  assert.equal(fedGoat.statusCode, 200);
+  assert.equal(Date.parse(fedGoat.json().livestock.animals[1].productReadyAt) - Date.parse(fedGoat.json().serverTime), 90_000);
+  await pool.query("UPDATE farm_animals SET product_ready_at = now() - interval '1 second' WHERE animal_id = $1", [goatId]);
+  const milk = await submit('android', { ...collect, commandId: randomUUID(), expectedRevision: fedGoat.json().revision, animalId: goatId });
+  assert.equal(milk.statusCode, 200);
+  assert.equal(milk.json().inventory.milk, 1);
+  assert.equal(milk.json().inventory.eggs, 1);
+
+  const milkState = milk.json();
+  await pool.query('UPDATE starter_farms SET coins = 6 WHERE player_uid = $1', [playerUid]);
+  const secondChicken = await submit('web', { ...buyChicken, commandId: randomUUID(), expectedRevision: milkState.revision });
+  assert.equal(secondChicken.statusCode, 200);
+  const pair = secondChicken.json();
+  const father = pair.livestock.animals[2];
+  assert.equal(father.sex, 'male');
+  assert.equal(pair.livestock.animals[0].sex, 'female');
+
+  const breed = { commandId: randomUUID(), expectedRevision: pair.revision, action: 'start_breeding',
+    animalId: chickenId, partnerId: father.animalId };
+  assert.equal((await submit('ios', { ...breed, partnerId: goatId })).json().code, 'invalid_breeding_pair');
+  assert.equal((await submit('ios', { ...breed, partnerId: chickenId })).json().code, 'invalid_breeding_pair');
+  const breeding = await submit('ios', breed);
+  assert.equal(breeding.statusCode, 200);
+  const pendingBreeding = breeding.json().livestock.breeding;
+  assert.equal(pendingBreeding.motherId, chickenId);
+  assert.equal(pendingBreeding.fatherId, father.animalId);
+  assert.equal(Date.parse(pendingBreeding.readyAt) - Date.parse(breeding.json().serverTime), 180_000);
+  assert.deepEqual((await load('web')).json().livestock.breeding, pendingBreeding);
+
+  const collectOffspring = { commandId: randomUUID(), expectedRevision: breeding.json().revision, action: 'collect_offspring' };
+  assert.equal((await submit('web', collectOffspring)).json().code, 'offspring_not_ready');
+  await pool.query("UPDATE farm_breeding SET ready_at = now() - interval '1 second' WHERE player_uid = $1", [playerUid]);
+  const births = await Promise.all([submit('web', collectOffspring), submit('android', collectOffspring)]);
+  assert.equal(births[0].statusCode, 200);
+  assert.equal(births[1].statusCode, 200);
+  const birth = births[0].json();
+  assert.deepEqual(births[1].json(), birth);
+  assert.equal(birth.livestock.animals.length, 4);
+  assert.equal(birth.livestock.breeding, null);
+  const chick = birth.livestock.animals[3];
+  assert.equal(chick.motherId, chickenId);
+  assert.equal(chick.fatherId, father.animalId);
+  assert.equal(Date.parse(chick.matureAt) - Date.parse(birth.serverTime), 120_000);
+  assert.deepEqual((await load('ios')).json().livestock, birth.livestock);
+  const relatedPair = { ...breed, commandId: randomUUID(), expectedRevision: birth.revision,
+    animalId: chick.animalId, partnerId: chick.sex === 'female' ? father.animalId : chickenId };
+  assert.equal((await submit('web', relatedPair)).json().code, 'invalid_breeding_pair');
+  await pool.query("UPDATE farm_animals SET mature_at = now() - interval '1 second' WHERE animal_id = $1", [chick.animalId]);
+  assert.equal((await submit('web', relatedPair)).json().code, 'invalid_breeding_pair');
+
+  const mill = { commandId: randomUUID(), expectedRevision: birth.revision, action: 'buy_mill' };
+  assert.equal((await submit('web', mill)).json().code, 'insufficient_coins');
+  assert.equal((await submit('ios', { ...mill, action: 'start_milling' })).json().code, 'mill_not_owned');
+  const millPrice = birth.mill.price;
+  await pool.query('UPDATE starter_farms SET coins = $2, wheat = 2 WHERE player_uid = $1', [playerUid, millPrice]);
+  const boughtMill = await submit('web', mill);
+  assert.equal(boughtMill.statusCode, 200);
+  assert.equal(boughtMill.json().wallet.coins, 0);
+  assert.equal(boughtMill.json().mill.owned, true);
+  assert.deepEqual((await submit('android', mill)).json(), boughtMill.json());
+
+  const startMilling = { commandId: randomUUID(), expectedRevision: boughtMill.json().revision, action: 'start_milling' };
+  const started = await submit('web', startMilling);
+  assert.equal(started.statusCode, 200);
+  assert.equal(started.json().inventory.wheat, 0);
+  assert.equal(Date.parse(started.json().mill.readyAt) - Date.parse(started.json().serverTime), 60_000);
+  assert.deepEqual((await load('android')).json().mill, started.json().mill);
+  assert.equal((await submit('ios', { ...startMilling, commandId: randomUUID(),
+    expectedRevision: started.json().revision })).json().code, 'mill_busy');
+
+  const collectFlour = { commandId: randomUUID(), expectedRevision: started.json().revision, action: 'collect_flour' };
+  assert.equal((await submit('ios', collectFlour)).json().code, 'flour_not_ready');
+  await pool.query("UPDATE farm_grain_mills SET ready_at = now() - interval '1 second' WHERE player_uid = $1", [playerUid]);
+  const milled = await submit('ios', collectFlour);
+  assert.equal(milled.statusCode, 200);
+  assert.equal(milled.json().inventory.flour, 1);
+  assert.equal(milled.json().mill.readyAt, null);
+  assert.deepEqual((await submit('web', collectFlour)).json(), milled.json());
+
+  const soldFlour = await submit('web', { commandId: randomUUID(), expectedRevision: milled.json().revision, action: 'sell_flour' });
+  assert.equal(soldFlour.statusCode, 200);
+  assert.equal(soldFlour.json().inventory.flour, 0);
+  assert.equal(soldFlour.json().wallet.coins, milled.json().mill.flourPrice);
+  const factoryLedger = await pool.query(
+    "SELECT reason, coin_delta FROM farm_wallet_entries WHERE player_uid = $1 AND reason IN ('mill_purchase', 'flour_sale') ORDER BY coin_delta",
+    [playerUid],
+  );
+  assert.deepEqual(factoryLedger.rows, [{ reason: 'mill_purchase', coin_delta: -millPrice },
+    { reason: 'flour_sale', coin_delta: milled.json().mill.flourPrice }]);
 
 });
