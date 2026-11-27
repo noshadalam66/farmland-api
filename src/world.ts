@@ -10,6 +10,8 @@ type WorldSelection = {
   areaKm2: 1 | 4 | 9;
 };
 
+type WorldSubmission = WorldSelection & { replaceFailedRequestId?: string };
+
 type WorldRequest = WorldSelection & {
   worldId: string;
   status: 'queued' | 'generating' | 'ready' | 'failed';
@@ -23,6 +25,7 @@ const selectionSchema = {
   required: ['requestId', 'latitude', 'longitude', 'areaKm2'],
   properties: {
     requestId: { type: 'string', pattern: '^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$' },
+    replaceFailedRequestId: { type: 'string', pattern: '^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$' },
     latitude: { type: 'number', minimum: -80, maximum: 80 },
     longitude: { type: 'number', minimum: -180, exclusiveMaximum: 180 },
     areaKm2: { type: 'integer', enum: [1, 4, 9] },
@@ -52,6 +55,19 @@ export class WorldStore {
       [playerUid],
     );
     return artifact;
+  }
+
+  async replaceFailed(playerUid: string, selection: WorldSelection, failedRequestId: string) {
+    const { rows: [world] } = await this.pool.query<WorldRequest>(
+      `UPDATE world_requests
+       SET request_id = $2, latitude = $3, longitude = $4, area_km2 = $5,
+           status = 'queued', failure_code = NULL, created_at = statement_timestamp()
+       WHERE player_uid = $1 AND request_id = $6 AND status = 'failed' AND request_id <> $2
+       RETURNING ${worldColumns}`,
+      [playerUid, selection.requestId, selection.latitude, selection.longitude, selection.areaKm2, failedRequestId],
+    );
+    if (world) return { created: true, world };
+    return { created: false, world: await this.load(playerUid) };
   }
 
   async queue(playerUid: string, selection: WorldSelection) {
@@ -101,11 +117,13 @@ export function registerWorldRoutes(api: FastifyInstance, store: WorldStore, ter
     });
   }
 
-  api.post<{ Body: WorldSelection }>('/world', {
+  api.post<{ Body: WorldSubmission }>('/world', {
     schema: { body: selectionSchema },
   }, async (request, reply) => {
     const selection = request.body;
-    const { created, world } = await store.queue(request.playerUid, selection);
+    const { created, world } = selection.replaceFailedRequestId
+      ? await store.replaceFailed(request.playerUid, selection, selection.replaceFailedRequestId)
+      : await store.queue(request.playerUid, selection);
     if (!world) return reply.code(409).send({ code: 'world_selection_changed' });
     if (created) return reply.code(201).send(world);
 
