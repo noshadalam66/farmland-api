@@ -128,3 +128,28 @@ Players are hidden by default. Send `PUT /v1/leaderboard/preferences` with
 `{ "enabled": true }` to join or `false` to hide the entry. This pilot ranks
 lifetime harvests. Seasonal snapshots and the other categories will need
 their own scoring rules and reporting.
+## World selection
+
+Apply world migrations `000003` and `000004` from `farmland-db`. Authenticate
+with the same Firebase account as the farm endpoints.
+
+- `POST /v1/world` accepts `{ requestId, latitude, longitude, areaKm2 }`.
+  Provide a UUID, center coordinates in WGS 84, and an area preset of 1, 4,
+  or 9 square kilometers. The initial supported center range is ±80° latitude
+  and longitude from −180° inclusive to 180° exclusive.
+- The first request returns HTTP 201 with the world ID and queued status.
+  Repeating the same request returns the saved world. Reusing an ID with
+  different inputs or submitting another world for the account returns HTTP 409.
+- `GET /v1/world` returns the caller's world or HTTP 404 if they have no world.
+
+One selection per account is supported in the pilot. Run one terrain job with `npm run terrain:once` after `npm run build`.
+Set `DATABASE_URL`, `TERRAIN_ROOT`, `TERRAIN_SOURCE` (the raster file path),
+and `TERRAIN_SOURCE_ID` (a versioned dataset reference). Set `TERRAIN_PYTHON`
+if the GDAL bindings are installed in a different Python interpreter.
+A worker can reclaim an interrupted job after its five-minute lease.
+
+Set the same `TERRAIN_ROOT` on the API with read access to the worker's output.
+For a ready world, the authenticated owner can GET
+`/v1/world/terrain/manifest.json` and the named chunks under
+`/v1/world/terrain/`. This pilot uses shared local storage and one operator-
+selected source raster.

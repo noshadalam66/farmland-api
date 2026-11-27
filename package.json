@@ -10,7 +10,8 @@
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
     "start": "node dist/server.js",
-    "test:integration": "npm run build && node --test test/*.integration.test.mjs"
+    "test:integration": "npm run build && node --test test/*.integration.test.mjs",
+    "terrain:once": "node dist/run-terrain-job.js"
   },
   "dependencies": {
     "@fastify/cors": "^11.4.3",
