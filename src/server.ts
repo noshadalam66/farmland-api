@@ -3,6 +3,7 @@ import { getAuth } from 'firebase-admin/auth';
 import pg from 'pg';
 import { createApp } from './app.js';
 import { FarmStore } from './farm.js';
+import { WorldStore } from './world.js';
 
 const { DATABASE_URL, FIREBASE_PROJECT_ID, WEB_ORIGIN, PORT } = process.env;
 if (Boolean(DATABASE_URL) !== Boolean(FIREBASE_PROJECT_ID)) {
@@ -12,6 +13,7 @@ if (Boolean(DATABASE_URL) !== Boolean(FIREBASE_PROJECT_ID)) {
 const pool = DATABASE_URL ? new pg.Pool({ connectionString: DATABASE_URL }) : undefined;
 const services = pool && FIREBASE_PROJECT_ID ? {
   store: new FarmStore(pool),
+  worldStore: new WorldStore(pool),
   verifyToken: (token: string) => getAuth().verifyIdToken(token),
 } : undefined;
 if (services) initializeApp({ projectId: FIREBASE_PROJECT_ID });

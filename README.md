@@ -53,7 +53,7 @@ HTTP 409 with `{ code, state }`, including the latest state as of the check.
 Rejected actions leave progress unchanged.
 
 Run `TEST_DATABASE_URL=postgresql://… npm run test:integration` against a test
-database with migration 000002 applied. The test runs actual PostgreSQL
+database with migrations 000002 and 000003 applied. The test runs actual PostgreSQL
 transactions and substitutes an in-process token verifier.
 
 ### Phase 1 service acceptance
@@ -77,3 +77,21 @@ ID token, and waits for the actual crop timer. It verifies that observers see
 the same plot and a replayed harvest awards wheat once. Run against disposable
 services because the test leaves its account and farm in the test databases.
 The Unity Play Mode and device handoff checks are separate.
+
+## World selection
+
+Apply migration `000003_world_requests.sql` from `farmland-db`. Authenticate
+with the same Firebase account as the farm endpoints.
+
+- `POST /v1/world` accepts `{ requestId, latitude, longitude, areaKm2 }`.
+  Provide a UUID, center coordinates in WGS 84, and an area preset of 1, 4,
+  or 9 square kilometers. The initial supported center range is ±80° latitude
+  and longitude from −180° inclusive to 180° exclusive.
+- The first request returns HTTP 201 with the world ID and queued status.
+  Repeating the same request returns the saved world. Reusing an ID with
+  different inputs or submitting another world for the account returns HTTP 409.
+- `GET /v1/world` returns the caller's world or HTTP 404 if they have no world.
+
+One selection per account is supported in the pilot. This migration persists
+the generation request. Terrain processing will consume queued requests in
+a subsequent change.
