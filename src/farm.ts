@@ -2,22 +2,27 @@ import type { Pool, PoolClient } from 'pg';
 
 export const crops = ['wheat', 'corn', 'rice'] as const;
 type Crop = typeof crops[number];
+type PlotId = 'starter' | 'expansion';
 
 export type FarmCommand = {
   commandId: string;
   expectedRevision: number;
 } & (
-  | { action: 'plant'; crop?: Crop }
-  | { action: 'harvest'; crop?: never }
-  | { action: 'sell'; crop: Crop }
+  | { action: 'plant'; crop?: Crop; plotId?: PlotId }
+  | { action: 'harvest'; crop?: never; plotId?: PlotId }
+  | { action: 'sell'; crop: Crop; plotId?: never }
+  | { action: 'buy_parcel'; crop?: never; plotId?: never }
 );
 
-type FarmRow = {
+type FarmRow = PlotRow & {
   revision: number;
   wheat: number;
   corn: number;
   rice: number;
   coins: number;
+};
+
+type PlotRow = {
   planted_crop: Crop | null;
   planted_at: Date | null;
   ready_at: Date | null;
@@ -28,21 +33,26 @@ export type FarmState = {
   inventory: Record<Crop, number>;
   wallet: { coins: number };
   market: { sellPrices: Record<Crop, number> };
-  plot: { crop: Crop; plantedAt: string; readyAt: string } | null;
+  plot: PlotState;
+  expansion: { owned: boolean; price: number; plot: PlotState };
   serverTime: string;
 };
 
+type PlotState = { crop: Crop; plantedAt: string; readyAt: string } | null;
+
 type CommandResult =
   | { ok: true; state: FarmState }
-  | { ok: false; code: 'command_id_reused' | 'stale_revision' | 'plot_occupied' | 'plot_empty' | 'crop_not_ready' | 'insufficient_crop'; state: FarmState };
+  | { ok: false; code: 'command_id_reused' | 'stale_revision' | 'plot_occupied' | 'plot_empty' | 'crop_not_ready' | 'insufficient_crop' | 'insufficient_coins' | 'parcel_already_owned' | 'parcel_not_owned'; state: FarmState };
 
+const expansionPrice = 7;
 const sellPrices: Record<Crop, number> = { wheat: 3, corn: 5, rice: 7 };
 const growthMilliseconds: Record<Crop, number> = { wheat: 60_000, corn: 90_000, rice: 120_000 };
 
-type SavedFarmState = Omit<FarmState, 'inventory' | 'plot' | 'wallet' | 'market'> & {
+type SavedFarmState = Omit<FarmState, 'inventory' | 'plot' | 'wallet' | 'market' | 'expansion'> & {
   inventory: { wheat: number; corn?: number; rice?: number };
   wallet?: FarmState['wallet'];
   market?: FarmState['market'];
+  expansion?: FarmState['expansion'];
   plot: { crop?: Crop; plantedAt: string; readyAt: string } | null;
 };
 
@@ -52,19 +62,24 @@ function readSavedState(state: SavedFarmState): FarmState {
     inventory: { corn: 0, rice: 0, ...state.inventory },
     wallet: state.wallet ?? { coins: 0 },
     market: state.market ?? { sellPrices },
+    expansion: state.expansion ?? { owned: false, price: expansionPrice, plot: null },
     plot: state.plot ? { ...state.plot, crop: state.plot.crop ?? 'wheat' } : null,
   };
 }
 
-function snapshot(farm: FarmRow, now: Date): FarmState {
+function plotState(plot: PlotRow | undefined): PlotState {
+  if (!plot?.planted_at || !plot.ready_at || !plot.planted_crop) return null;
+  return { crop: plot.planted_crop, plantedAt: plot.planted_at.toISOString(), readyAt: plot.ready_at.toISOString() };
+}
+
+function snapshot(farm: FarmRow, now: Date, expansion?: PlotRow): FarmState {
   return {
     revision: farm.revision,
     inventory: { wheat: farm.wheat, corn: farm.corn, rice: farm.rice },
     wallet: { coins: farm.coins },
     market: { sellPrices },
-    plot: farm.planted_at && farm.ready_at && farm.planted_crop
-      ? { crop: farm.planted_crop, plantedAt: farm.planted_at.toISOString(), readyAt: farm.ready_at.toISOString() }
-      : null,
+    plot: plotState(farm),
+    expansion: { owned: expansion !== undefined, price: expansionPrice, plot: plotState(expansion) },
     serverTime: now.toISOString(),
   };
 }
@@ -73,15 +88,22 @@ export class FarmStore {
   constructor(private readonly pool: Pool) {}
 
   async load(playerUid: string): Promise<FarmState> {
-    const { rows: [farm] } = await this.pool.query<FarmRow & { server_time: Date }>(
+    const { rows: [farm] } = await this.pool.query<FarmRow & { server_time: Date; expansion_owned: boolean; expansion_crop: Crop | null;
+      expansion_planted_at: Date | null; expansion_ready_at: Date | null }>(
       `SELECT COALESCE(farm.revision, 0) AS revision, COALESCE(farm.wheat, 0) AS wheat,
               COALESCE(farm.corn, 0) AS corn, COALESCE(farm.rice, 0) AS rice,
-              COALESCE(farm.coins, 0) AS coins, farm.planted_at, farm.ready_at, farm.planted_crop, statement_timestamp() AS server_time
+              COALESCE(farm.coins, 0) AS coins, farm.planted_at, farm.ready_at, farm.planted_crop, statement_timestamp() AS server_time,
+              expansion.player_uid IS NOT NULL AS expansion_owned, expansion.planted_crop AS expansion_crop,
+              expansion.planted_at AS expansion_planted_at, expansion.ready_at AS expansion_ready_at
        FROM (VALUES ($1::text)) AS player(uid)
-       LEFT JOIN starter_farms AS farm ON farm.player_uid = player.uid`,
+       LEFT JOIN starter_farms AS farm ON farm.player_uid = player.uid
+       LEFT JOIN farm_expansion_plots AS expansion ON expansion.player_uid = player.uid`,
       [playerUid],
     );
-    return snapshot(farm, farm.server_time);
+    const expansion = farm.expansion_owned ? {
+      planted_crop: farm.expansion_crop, planted_at: farm.expansion_planted_at, ready_at: farm.expansion_ready_at,
+    } : undefined;
+    return snapshot(farm, farm.server_time, expansion);
   }
 
   async execute(playerUid: string, command: FarmCommand): Promise<CommandResult> {
@@ -113,52 +135,104 @@ export class FarmStore {
     const { rows: [{ server_time: now }] } = await client.query<{ server_time: Date }>(
       'SELECT clock_timestamp() AS server_time',
     );
-    const state = snapshot(farm, now);
+    const { rows: [expansion] } = await client.query<PlotRow>(
+      'SELECT planted_crop, planted_at, ready_at FROM farm_expansion_plots WHERE player_uid = $1',
+      [playerUid],
+    );
+    const state = snapshot(farm, now, expansion);
     const { rows: [previous] } = await client.query<{
       action: FarmCommand['action'];
       expected_revision: number;
       crop: Crop | null;
+      plot_id: PlotId | null;
       response: SavedFarmState;
     }>(
-      'SELECT action, expected_revision, crop, response FROM starter_farm_commands WHERE player_uid = $1 AND command_id = $2',
+      'SELECT action, expected_revision, crop, plot_id, response FROM starter_farm_commands WHERE player_uid = $1 AND command_id = $2',
       [playerUid, command.commandId],
     );
 
     const commandCrop = command.action === 'plant' ? command.crop ?? 'wheat' : command.crop ?? null;
+    const isPlotCommand = command.action === 'plant' || command.action === 'harvest';
+    const plotId = isPlotCommand ? command.plotId ?? 'starter' : null;
     if (previous) {
       const previousCrop = previous.crop ?? (previous.action === 'plant' ? 'wheat' : null);
+      const previousPlot = previous.plot_id ?? (previous.action === 'plant' || previous.action === 'harvest' ? 'starter' : null);
       if (previous.action !== command.action || previous.expected_revision !== command.expectedRevision ||
-          previousCrop !== commandCrop) {
+          previousCrop !== commandCrop || previousPlot !== plotId) {
         return { ok: false, code: 'command_id_reused', state };
       }
       return { ok: true, state: readSavedState(previous.response) };
     }
     if (farm.revision !== command.expectedRevision) return { ok: false, code: 'stale_revision', state };
-    if (command.action === 'plant' && farm.ready_at) return { ok: false, code: 'plot_occupied', state };
+    const plot = plotId === 'expansion' ? expansion : farm;
+    if (isPlotCommand && !plot) return { ok: false, code: 'parcel_not_owned', state };
+    if (command.action === 'plant' && plot?.ready_at) return { ok: false, code: 'plot_occupied', state };
     if (command.action === 'harvest') {
-      if (!farm.ready_at) return { ok: false, code: 'plot_empty', state };
-      if (now < farm.ready_at) return { ok: false, code: 'crop_not_ready', state };
+      if (!plot?.ready_at) return { ok: false, code: 'plot_empty', state };
+      if (now < plot.ready_at) return { ok: false, code: 'crop_not_ready', state };
     }
-
     if (command.action === 'sell' && farm[command.crop] < 1) {
       return { ok: false, code: 'insufficient_crop', state };
     }
+    if (command.action === 'buy_parcel') {
+      if (expansion) return { ok: false, code: 'parcel_already_owned', state };
+      if (farm.coins < expansionPrice) return { ok: false, code: 'insufficient_coins', state };
+    }
 
-    const salePrice = command.action === 'sell' ? sellPrices[command.crop] : 0;
-    const updated = command.action === 'sell'
-      ? await this.sellCrop(client, playerUid, command.crop, salePrice)
-      : await this.updatePlot(client, playerUid, farm, command.action === 'plant' ? commandCrop : null, now);
-    const response = snapshot(updated, now);
+    let coinDelta = 0;
+    let reason: string | null = null;
+    let updatedExpansion: PlotRow | undefined = expansion;
+    let updated: FarmRow;
+    switch (command.action) {
+      case 'sell':
+        coinDelta = sellPrices[command.crop];
+        reason = 'crop_sale';
+        updated = await this.sellCrop(client, playerUid, command.crop, coinDelta);
+        break;
+      case 'buy_parcel': {
+        coinDelta = -expansionPrice;
+        reason = 'parcel_purchase';
+        const { rows: [bought] } = await client.query<PlotRow>(
+          'INSERT INTO farm_expansion_plots (player_uid) VALUES ($1) RETURNING *', [playerUid],
+        );
+        updatedExpansion = bought;
+        const { rows: [debited] } = await client.query<FarmRow>(
+          'UPDATE starter_farms SET coins = coins + $2, revision = revision + 1 WHERE player_uid = $1 RETURNING *',
+          [playerUid, coinDelta],
+        );
+        updated = debited;
+        break;
+      }
+      default: {
+        const plantCrop = command.action === 'plant' ? commandCrop : null;
+        const harvestedCrop = command.action === 'harvest' ? plot?.planted_crop ?? null : null;
+        const times = {
+          planted_at: plantCrop ? now : null,
+          ready_at: plantCrop ? new Date(now.getTime() + growthMilliseconds[plantCrop]) : null,
+          planted_crop: plantCrop,
+        };
+        if (plotId === 'expansion') {
+          await client.query(
+            `UPDATE farm_expansion_plots SET planted_at = $2, ready_at = $3, planted_crop = $4
+             WHERE player_uid = $1`,
+            [playerUid, times.planted_at, times.ready_at, times.planted_crop],
+          );
+          updatedExpansion = times;
+        }
+        updated = await this.updatePlot(client, playerUid, harvestedCrop, plotId === 'starter', times);
+      }
+    }
+    const response = snapshot(updated, now, updatedExpansion);
     await client.query(
-      `INSERT INTO starter_farm_commands (player_uid, command_id, action, expected_revision, response, crop)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [playerUid, command.commandId, command.action, command.expectedRevision, response, commandCrop],
+      `INSERT INTO starter_farm_commands (player_uid, command_id, action, expected_revision, response, crop, plot_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [playerUid, command.commandId, command.action, command.expectedRevision, response, commandCrop, plotId],
     );
-    if (salePrice > 0) {
+    if (reason) {
       await client.query(
         `INSERT INTO farm_wallet_entries (player_uid, command_id, reason, coin_delta, balance_after)
-         VALUES ($1, $2, 'crop_sale', $3, $4)`,
-        [playerUid, command.commandId, salePrice, updated.coins],
+         VALUES ($1, $2, $3, $4, $5)`,
+        [playerUid, command.commandId, reason, coinDelta, updated.coins],
       );
     }
     return { ok: true, state: response };
@@ -177,18 +251,19 @@ export class FarmStore {
     return updated;
   }
 
-  private async updatePlot(client: PoolClient, playerUid: string, farm: FarmRow, plantCrop: Crop | null, now: Date) {
-    const harvestedCrop = plantCrop ? null : farm.planted_crop;
-    const readyAt = plantCrop ? new Date(now.getTime() + growthMilliseconds[plantCrop]) : null;
+  private async updatePlot(client: PoolClient, playerUid: string, harvestedCrop: Crop | null,
+    isStarter: boolean, plot: PlotRow) {
     const { rows: [updated] } = await client.query<FarmRow>(
       `UPDATE starter_farms
        SET revision = revision + 1,
            wheat = wheat + CASE WHEN $2 = 'wheat' THEN 1 ELSE 0 END,
            corn = corn + CASE WHEN $2 = 'corn' THEN 1 ELSE 0 END,
            rice = rice + CASE WHEN $2 = 'rice' THEN 1 ELSE 0 END,
-           planted_at = $3, ready_at = $4, planted_crop = $5
+           planted_at = CASE WHEN $3 THEN $4 ELSE planted_at END,
+           ready_at = CASE WHEN $3 THEN $5 ELSE ready_at END,
+           planted_crop = CASE WHEN $3 THEN $6 ELSE planted_crop END
        WHERE player_uid = $1 RETURNING *`,
-      [playerUid, harvestedCrop, plantCrop ? now : null, readyAt, plantCrop],
+      [playerUid, harvestedCrop, isStarter, plot.planted_at, plot.ready_at, plot.planted_crop],
     );
     return updated;
   }
