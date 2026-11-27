@@ -15,3 +15,43 @@ Build with `npm run build` and start the compiled service with `npm start`. Set 
 The first gameplay milestone adds Firebase identity verification, server-authoritative farm commands and server-time crop progression. Database migrations live in `farmland-db`.
 
 Open pull requests against `main` after the initial bootstrap.
+
+## Starter farm
+
+Apply migrations in `farmland-db` through `000002_starter_farms.sql`, set
+`DATABASE_URL` and `FIREBASE_PROJECT_ID`, and restart the server. For the Unity
+Web shell, set `WEB_ORIGIN` to the exact origin that serves it. With both required
+variables unset the service exposes only the health endpoint.
+
+All farm requests use `Authorization: Bearer <Firebase ID token>`. Use the same
+Firebase project and player account across platforms.
+
+| Request | Result |
+| --- | --- |
+| `GET /v1/farm` | Latest confirmed plot, wheat inventory, revision, and server time. A new farm starts empty at revision zero. |
+| `POST /v1/farm/commands` | Applies one action and returns the updated farm. |
+
+A command body looks like this:
+
+```json
+{
+  "commandId": "e2a23624-705b-4a1b-97eb-94e3670777d8",
+  "expectedRevision": 0,
+  "action": "plant"
+}
+```
+
+Use the revision from the latest state and a fresh UUID for each new action.
+`plant` starts a 60-second wheat timer and `harvest` clears a ready plot and
+adds one wheat. State includes `plot` (null or `{ plantedAt, readyAt }`),
+`inventory.wheat`, `revision`, and `serverTime`. All times are UTC ISO 8601.
+
+After a lost response, retry the same command unchanged. The API returns the
+original committed snapshot, which may be older than the latest farm state.
+Refresh via GET before presenting the state after a retry. Conflicts return
+HTTP 409 with `{ code, state }`, including the latest state as of the check.
+Rejected actions leave progress unchanged.
+
+Run `TEST_DATABASE_URL=postgresql://… npm run test:integration` against a test
+database with migration 000002 applied. The test runs actual PostgreSQL
+transactions and substitutes an in-process token verifier.
