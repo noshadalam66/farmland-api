@@ -115,3 +115,16 @@ ID token, and waits for the actual crop timer. It verifies that observers see
 the same plot and a replayed harvest awards wheat once. Run against disposable
 services because the test leaves its account and farm in the test databases.
 The Unity Play Mode and device handoff checks are separate.
+
+## Harvest leaderboard
+
+Apply migration 000012 to enable the first global leaderboard category.
+`GET /v1/leaderboard/harvests` returns the top 20 opted-in farms and the
+caller's own rank when ranked. Each score counts successful harvest command
+receipts. Equal scores share a rank. Names are generated aliases and the API
+does not return Firebase IDs or email addresses.
+
+Players are hidden by default. Send `PUT /v1/leaderboard/preferences` with
+`{ "enabled": true }` to join or `false` to hide the entry. This pilot ranks
+lifetime harvests. Seasonal snapshots and the other categories will need
+their own scoring rules and reporting.
