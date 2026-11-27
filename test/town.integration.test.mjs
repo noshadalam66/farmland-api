@@ -6,7 +6,7 @@ import { createApp } from '../dist/app.js';
 import { FarmStore } from '../dist/farm.js';
 
 test('town buildings charge once and residents arrive from server time', async (t) => {
-  assert.ok(process.env.TEST_DATABASE_URL, 'Set TEST_DATABASE_URL to a test database with migration 000013.');
+  assert.ok(process.env.TEST_DATABASE_URL, 'Set TEST_DATABASE_URL to a test database with migrations 000013–000014.');
   const pool = new Pool({ connectionString: process.env.TEST_DATABASE_URL });
   const uid = randomUUID();
   const other = randomUUID();
@@ -37,15 +37,17 @@ test('town buildings charge once and residents arrive from server time', async (
   const expansion = (await send(command(0, 'buy_parcel'))).json();
   assert.equal(expansion.expansion.owned, true);
   assert.equal((await send(command(expansion.revision, 'build_town', 'cottage'))).json().code, 'town_requires_road');
-  assert.equal((await send(command(expansion.revision, 'build_town', 'clinic'))).statusCode, 400);
+  assert.equal((await send(command(expansion.revision, 'build_town', 'castle'))).statusCode, 400);
   assert.equal((await send({ ...command(expansion.revision, 'build_town', 'road'), price: 0 })).statusCode, 400);
 
+  assert.equal((await send(command(expansion.revision, 'build_town', 'water_tower'))).json().code, 'town_requires_road');
   const road = await send(command(expansion.revision, 'build_town', 'road'));
   assert.equal(road.statusCode, 200);
   const connected = road.json();
   assert.equal(connected.town.buildings[0].kind, 'road');
   assert.equal((await send(command(connected.revision, 'build_town', 'road'))).json().code, 'town_building_limit');
 
+  assert.equal((await send(command(connected.revision, 'build_town', 'workshop'))).json().code, 'town_requires_cottage');
   const buy = command(connected.revision, 'build_town', 'cottage');
   const attempts = await Promise.all([send(buy), send(buy, 'second')]);
   assert.ok(attempts.every((response) => response.statusCode === 200));
@@ -67,4 +69,21 @@ test('town buildings charge once and residents arrive from server time', async (
     [uid],
   );
   assert.deepEqual(ledger.rows, [{ coin_delta: -12 }, { coin_delta: -6 }]);
+  await pool.query('UPDATE starter_farms SET coins = 100 WHERE player_uid = $1', [uid]);
+  let current = (await load('first')).json();
+  for (const kind of ['cottage', 'water_tower', 'workshop', 'school', 'clinic']) {
+    const response = await send(command(current.revision, 'build_town', kind));
+    assert.equal(response.statusCode, 200, kind);
+    current = response.json();
+  }
+  assert.equal(current.town.housingCapacity, 6);
+  assert.equal((await send(command(current.revision, 'build_town', 'water_tower'))).json().code, 'town_building_limit');
+  await pool.query("UPDATE farm_town_buildings SET built_at = now() - interval '24 hours' WHERE player_uid = $1 AND kind = 'cottage'", [uid]);
+  const grown = (await load('second')).json();
+  assert.equal(grown.town.residents, 6);
+  assert.deepEqual(grown.town.capacities, { water: 12, jobs: 4, education: 6, health: 8 });
+  assert.deepEqual(grown.town.served, { water: 6, jobs: 4, education: 6, health: 6 });
+  assert.equal(grown.town.wellbeing, 95);
+  assert.deepEqual((await load('other')).json().town.served, { water: 0, jobs: 0, education: 0, health: 0 });
+
 });

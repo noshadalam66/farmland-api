@@ -85,7 +85,7 @@ function readSavedState(state: SavedFarmState): FarmState {
     ...state,
     inventory: { corn: 0, rice: 0, milk: 0, eggs: 0, flour: 0, ...state.inventory },
     mill: state.mill ?? millState(null),
-    town: state.town ?? townState([], new Date(state.serverTime)),
+    town: townState(state.town?.buildings ?? [], new Date(state.serverTime)),
     wallet: state.wallet ?? { coins: 0 },
     market: state.market ?? { sellPrices },
     expansion: state.expansion ?? { owned: false, price: expansionPrice, plot: null },
