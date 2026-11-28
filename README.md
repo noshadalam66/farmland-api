@@ -194,3 +194,18 @@ lets the three crops mature on their real server timers, resumes from
 a second session, sells rice, buys the expansion, and harvests the two
 plots independently. The check uses separate API sessions for one
 test account. Verify the same flow in the platform builds for release.
+
+### Phase 4 livestock and grain processing
+
+Apply migration 000016 before deploying the livestock market API.
+The farm snapshot advertises milk and egg prices in
+`livestock.productPrices`. Use `sell_milk` or `sell_eggs` with the normal
+revision and command ID to sell one unit. Sale proceeds and stock changes
+commit together, with a `livestock_sale` wallet entry. Offspring must
+mature before starting a new production timer. Existing active production
+timers can still be collected.
+
+The farm integration suite covers purchasing goats and chickens, feed
+and collection, breeding and saved lineage, both livestock product sales,
+and processing wheat into flour. It uses shortened database timers to
+verify the transitions and retries without waiting for production.

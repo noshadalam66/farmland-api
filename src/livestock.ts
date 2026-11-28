@@ -7,6 +7,9 @@ type Sex = 'female' | 'male';
 
 export const animalPrices: Record<AnimalSpecies, number> = { goat: 12, chicken: 6 };
 export const animalCapacity = 8;
+export const animalProductPrices = { milk: 5, eggs: 3 } as const;
+export const animalSaleActions = ['sell_milk', 'sell_eggs'] as const;
+export type AnimalSaleAction = typeof animalSaleActions[number];
 export const animalProduction = {
   goat: { product: 'milk', milliseconds: 90_000 },
   chicken: { product: 'eggs', milliseconds: 60_000 },
