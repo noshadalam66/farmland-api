@@ -1,3 +1,4 @@
+import { bakeryActions } from './bakery.js';
 import cors from '@fastify/cors';
 import Fastify from 'fastify';
 import { registerLeaderboardRoutes, type LeaderboardStore } from './leaderboard.js';
@@ -23,7 +24,7 @@ const commandSchema = {
   properties: {
     commandId: { type: 'string', pattern: '^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$' },
     expectedRevision: { type: 'integer', minimum: 0, maximum: 2147483647 },
-    action: { type: 'string', enum: ['plant', 'harvest', 'sell', 'buy_parcel', 'buy_animal', 'feed_animal', 'collect_animal', 'start_breeding', 'collect_offspring', 'build_town', 'fulfil_town_order', ...animalSaleActions, ...millActions] },
+    action: { type: 'string', enum: ['plant', 'harvest', 'sell', 'buy_parcel', 'buy_animal', 'feed_animal', 'collect_animal', 'start_breeding', 'collect_offspring', 'build_town', 'fulfil_town_order', ...animalSaleActions, ...millActions, ...bakeryActions] },
     crop: { type: 'string', enum: crops },
     animalId: { type: 'string', pattern: '^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$' },
     partnerId: { type: 'string', pattern: '^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$' },
@@ -42,7 +43,7 @@ const commandSchema = {
       else: { not: { required: ['building'] } } },
     { if: { properties: { action: { const: 'start_breeding' } } },
       then: { required: ['partnerId'] }, else: { not: { required: ['partnerId'] } } },
-    { if: { properties: { action: { enum: ['collect_offspring', ...animalSaleActions, ...millActions] } } },
+    { if: { properties: { action: { enum: ['collect_offspring', ...animalSaleActions, ...millActions, ...bakeryActions] } } },
       then: { not: { anyOf: [{ required: ['crop'] }, { required: ['plotId'] }] } } },
     { if: { properties: { action: { enum: ['feed_animal', 'collect_animal', 'start_breeding'] } } },
       then: { required: ['animalId'], not: { anyOf: [{ required: ['crop'] }, { required: ['plotId'] }] } },

@@ -50,6 +50,8 @@ test('farm commands preserve progress across sessions and retries', async (t) =>
 
   const initial = (await load('android')).json();
   assert.equal(initial.revision, 0);
+  assert.equal((await submit('web', { commandId: randomUUID(), expectedRevision: 0,
+    action: 'buy_bakery' })).json().code, 'bakery_requires_mill');
   assert.deepEqual(initial.cropGrowthMilliseconds, { wheat: 60_000, corn: 90_000, rice: 120_000 });
   assert.equal(initial.plot, null);
   const plant = { commandId: randomUUID(), expectedRevision: 0, action: 'plant' };
@@ -89,7 +91,7 @@ test('farm commands preserve progress across sessions and retries', async (t) =>
 
   const final = (await load('android')).json();
   assert.equal(final.revision, 2);
-  assert.deepEqual(final.inventory, { wheat: 1, corn: 0, rice: 0, milk: 0, eggs: 0, flour: 0 });
+  assert.deepEqual(final.inventory, { wheat: 1, corn: 0, rice: 0, milk: 0, eggs: 0, flour: 0, bread: 0 });
   assert.equal(final.plot, null);
 
   let revision = final.revision;
@@ -120,7 +122,7 @@ test('farm commands preserve progress across sessions and retries', async (t) =>
     assert.deepEqual((await submit('android', harvestCrop)).json(), collected.json());
     revision = collected.json().revision;
   }
-  assert.deepEqual((await load('android')).json().inventory, { wheat: 1, corn: 1, rice: 1, milk: 0, eggs: 0, flour: 0 });
+  assert.deepEqual((await load('android')).json().inventory, { wheat: 1, corn: 1, rice: 1, milk: 0, eggs: 0, flour: 0, bread: 0 });
 
   const legacyReceipt = { ...plantState, inventory: { wheat: 0 },
     plot: { plantedAt: plantState.plot.plantedAt, readyAt: plantState.plot.readyAt } };
@@ -131,7 +133,7 @@ test('farm commands preserve progress across sessions and retries', async (t) =>
   const legacyReplay = await submit('web', { ...plant, crop: 'wheat' });
   assert.equal(legacyReplay.statusCode, 200);
   assert.equal(legacyReplay.json().plot.crop, 'wheat');
-  assert.deepEqual(legacyReplay.json().inventory, { wheat: 0, corn: 0, rice: 0, milk: 0, eggs: 0, flour: 0 });
+  assert.deepEqual(legacyReplay.json().inventory, { wheat: 0, corn: 0, rice: 0, milk: 0, eggs: 0, flour: 0, bread: 0 });
 
   const newPlant = await submit('android', {
     commandId: randomUUID(), expectedRevision: revision, action: 'plant', crop: 'rice',
@@ -378,5 +380,63 @@ test('farm commands preserve progress across sessions and retries', async (t) =>
   assert.deepEqual(reopened.inventory, marketState.inventory);
   assert.deepEqual(reopened.wallet, marketState.wallet);
   assert.deepEqual(reopened.livestock, marketState.livestock);
+
+  await pool.query('UPDATE starter_farms SET coins = $2 WHERE player_uid = $1', [playerUid, reopened.bakery.price]);
+  const buyBakery = { commandId: randomUUID(), expectedRevision: reopened.revision, action: 'buy_bakery' };
+  const purchased = await submit('web', buyBakery);
+  assert.equal(purchased.statusCode, 200);
+  const bakery = purchased.json();
+  assert.equal(bakery.bakery.owned, true);
+  assert.equal(bakery.wallet.coins, 0);
+  assert.deepEqual((await submit('android', buyBakery)).json(), bakery);
+
+  const bake = { commandId: randomUUID(), expectedRevision: bakery.revision, action: 'start_baking' };
+  assert.equal((await submit('ios', bake)).json().code, 'bakery_ingredients');
+  await pool.query('UPDATE starter_farms SET flour = 1, milk = 1, eggs = 1 WHERE player_uid = $1', [playerUid]);
+  const baking = (await submit('ios', bake)).json();
+  assert.equal(baking.inventory.flour, 0);
+  assert.equal(baking.inventory.milk, 0);
+  assert.equal(baking.inventory.eggs, 0);
+  assert.equal(Date.parse(baking.bakery.readyAt) - Date.parse(baking.serverTime), 90_000);
+  assert.deepEqual((await load('web')).json().bakery, baking.bakery);
+  const collectBread = { commandId: randomUUID(), expectedRevision: baking.revision, action: 'collect_bread' };
+  assert.equal((await submit('web', collectBread)).json().code, 'bread_not_ready');
+  await pool.query("UPDATE farm_bakeries SET ready_at = now() - interval '1 second' WHERE player_uid = $1", [playerUid]);
+  const bread = (await submit('android', collectBread)).json();
+  assert.equal(bread.inventory.bread, 1);
+  assert.equal(bread.bakery.readyAt, null);
+  assert.deepEqual((await submit('ios', collectBread)).json(), bread);
+  const sellBread = { commandId: randomUUID(), expectedRevision: bread.revision, action: 'sell_bread' };
+  const breadSale = (await submit('ios', sellBread)).json();
+  assert.equal(breadSale.inventory.bread, 0);
+  assert.equal(breadSale.wallet.coins, bakery.bakery.breadPrice);
+  assert.deepEqual((await submit('web', sellBread)).json(), breadSale);
+  const bakeryLedger = await pool.query(
+    "SELECT reason, coin_delta FROM farm_wallet_entries WHERE player_uid = $1 AND reason IN ('bakery_purchase', 'bread_sale') ORDER BY coin_delta",
+    [playerUid],
+  );
+  assert.deepEqual(bakeryLedger.rows, [
+    { reason: 'bakery_purchase', coin_delta: -bakery.bakery.price },
+    { reason: 'bread_sale', coin_delta: bakery.bakery.breadPrice },
+  ]);
+
+  await pool.query('UPDATE starter_farms SET bread = $2, flour = 1, milk = 1, eggs = 1 WHERE player_uid = $1',
+    [playerUid, breadSale.bakery.breadCapacity]);
+  const blockedBatch = (await submit('web', { ...bake, commandId: randomUUID(),
+    expectedRevision: breadSale.revision })).json();
+  await pool.query("UPDATE farm_bakeries SET ready_at = now() - interval '1 second' WHERE player_uid = $1", [playerUid]);
+  const nextLoaf = { ...collectBread, commandId: randomUUID(), expectedRevision: blockedBatch.revision };
+  assert.equal((await submit('ios', nextLoaf)).json().code, 'bread_storage_full');
+  assert.notEqual((await load('web')).json().bakery.readyAt, null);
+
+  const upgrade = { commandId: randomUUID(), expectedRevision: blockedBatch.revision, action: 'upgrade_bakery_storage' };
+  const upgraded = (await submit('web', upgrade)).json();
+  assert.equal(upgraded.bakery.storageUpgraded, true);
+  assert.equal(upgraded.wallet.coins, breadSale.wallet.coins - breadSale.bakery.storagePrice);
+  assert.ok(upgraded.bakery.breadCapacity > breadSale.bakery.breadCapacity);
+  assert.deepEqual((await submit('ios', upgrade)).json(), upgraded);
+  const stored = (await submit('android', { ...nextLoaf, expectedRevision: upgraded.revision })).json();
+  assert.equal(stored.inventory.bread, breadSale.bakery.breadCapacity + 1);
+  assert.equal(stored.bakery.readyAt, null);
 
 });

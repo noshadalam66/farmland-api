@@ -209,3 +209,14 @@ The farm integration suite covers purchasing goats and chickens, feed
 and collection, breeding and saved lineage, both livestock product sales,
 and processing wheat into flour. It uses shortened database timers to
 verify the transitions and retries without waiting for production.
+
+### Phase 5 industry and market
+
+Apply migration 000017 before deploying the API. A player who owns a grain
+mill can buy a bakery for 24 coins. Each batch takes 90 seconds and uses
+one flour, one milk, and one egg. A collected loaf can be sold for 22 coins
+or used to fill a 30-coin daily bread contract once the town reaches five
+residents. The starter warehouse holds three loaves. For 18 coins, players
+with a bakery can upgrade it to twelve. A finished batch stays ready until
+storage is available. The farm snapshot exposes the recipe, prices, stock, and batch
+deadline. All commands use the existing revision and replay protection.
