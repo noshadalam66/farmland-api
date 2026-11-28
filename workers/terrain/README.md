@@ -121,3 +121,15 @@ The real-dataset test submits a 9 km² request and downloads the generated
 manifest, elevations, and water masks through the API using a second session
 for the same account. It also checks that a different account cannot load
 the manifest. The test is skipped when either dataset path is unset.
+
+### Run the API and worker from a shared image
+
+Build from the API repository root with `docker build -t farmland-api .`.
+Start the API using the image's default command. Start a separate worker
+using the same image with `node dist/run-terrain-job.js --watch` as its
+command. Give both the same database and mount the same persistent terrain
+directory at the path set by `TERRAIN_ROOT`. The image runs as the `node`
+user (UID 1000), which needs write access to that directory for the worker.
+Mount the elevation and optional water datasets read-only in the worker
+and set the source paths and IDs described above. Keep database and
+Firebase credentials in the deployment configuration.
