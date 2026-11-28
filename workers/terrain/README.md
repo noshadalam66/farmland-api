@@ -108,3 +108,16 @@ the worker after infrastructure failures.
 
 The API and worker must both have access to the same `TERRAIN_ROOT`.
 `npm run terrain:once` remains available for manual processing.
+
+### Verify the San Francisco world through the API
+
+With the San Francisco raster and water shapefile prepared as above, set
+`TEST_DATABASE_URL` to a disposable database with the gameplay migrations
+applied. Set `TEST_TERRAIN_SOURCE` and `TEST_TERRAIN_WATER_SOURCE` to the two
+local datasets and `TERRAIN_PYTHON` to the Python executable with GDAL
+installed. Run `npm run test:integration`.
+
+The real-dataset test submits a 9 km² request and downloads the generated
+manifest, elevations, and water masks through the API using a second session
+for the same account. It also checks that a different account cannot load
+the manifest. The test is skipped when either dataset path is unset.

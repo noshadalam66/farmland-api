@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import pg from 'pg';
@@ -167,4 +168,76 @@ test('the terrain worker recovers an expired lease and serves the completed arti
   const failed = (await get(otherUid, '/v1/world')).json();
   assert.equal(failed.status, 'failed');
   assert.equal(failed.failureCode, 'terrain_export_failed');
+});
+
+const realSource = process.env.TEST_TERRAIN_SOURCE;
+const realWater = process.env.TEST_TERRAIN_WATER_SOURCE;
+test('a selected world serves real terrain to a second session of the same account', {
+  skip: !realSource || !realWater,
+}, async (t) => {
+  const pool = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL });
+  const root = await mkdtemp(join(tmpdir(), 'farmland-real-terrain-'));
+  const uid = randomUUID();
+  const app = createApp({
+    store: new FarmStore(pool),
+    worldStore: new WorldStore(pool),
+    terrainRoot: root,
+    verifyToken: async (token) => ({ uid: token === 'other-account' ? randomUUID() : uid }),
+  });
+  t.after(async () => {
+    try {
+      await app.close();
+      await pool.query('DELETE FROM world_requests WHERE player_uid = $1', [uid]);
+    } finally {
+      await pool.end();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  const selection = { requestId: randomUUID(), latitude: 37.7598, longitude: -122.499, areaKm2: 9 };
+  const submitted = await app.inject({
+    method: 'POST', url: '/v1/world', payload: selection,
+    headers: { authorization: 'Bearer first-session' },
+  });
+  assert.equal(submitted.statusCode, 201);
+  assert.equal(submitted.json().status, 'queued');
+  assert.equal(await processTerrainJob(pool, {
+    root, source: realSource, sourceId: 'USGS-3DEP',
+    python: process.env.TERRAIN_PYTHON ?? 'python3',
+    exporter: fileURLToPath(new URL('../workers/terrain/export.py', import.meta.url)),
+    water: { source: realWater, sourceId: 'Census-TIGER-2024' },
+  }), 'ready');
+
+  const get = (url, token = 'second-session') =>
+    app.inject({ url, headers: { authorization: `Bearer ${token}` } });
+  const terrain = (name, token) => get('/v1/world/terrain/' + name, token);
+  const ready = (await get('/v1/world')).json();
+  assert.equal(ready.status, 'ready');
+  assert.equal(ready.worldId, submitted.json().worldId);
+  const response = await terrain('manifest.json');
+  assert.equal(response.statusCode, 200);
+  const manifest = response.json();
+  assert.deepEqual(manifest.center, { latitude: selection.latitude, longitude: selection.longitude });
+  assert.equal(manifest.chunks.length, 9);
+  assert.equal(manifest.sourceId, 'USGS-3DEP');
+  assert.equal(manifest.waterMask.sourceId, 'Census-TIGER-2024');
+
+  const heights = new Set();
+  const waterValues = new Set();
+  for (const { file, waterFile } of manifest.chunks) {
+    const [height, water] = await Promise.all([terrain(file), terrain(waterFile)]);
+    assert.equal(height.statusCode, 200);
+    assert.equal(water.statusCode, 200);
+    assert.equal(height.rawPayload.length, 33 * 33 * 4);
+    assert.equal(water.rawPayload.length, 33 * 33);
+    for (let i = 0; i < height.rawPayload.length; i += 4) {
+      const value = height.rawPayload.readFloatLE(i);
+      assert.ok(Number.isFinite(value));
+      heights.add(value);
+    }
+    for (const value of water.rawPayload) waterValues.add(value);
+  }
+  assert.ok(heights.size > 1);
+  assert.deepEqual(waterValues, new Set([0, 1]));
+  assert.equal((await terrain('manifest.json', 'other-account')).statusCode, 404);
 });
