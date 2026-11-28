@@ -1,9 +1,10 @@
-export const townOrderKeys = ['wheat_supply', 'flour_supply', 'milk_supply'] as const;
+export const townOrderKeys = ['wheat_supply', 'flour_supply', 'milk_supply', 'bread_supply'] as const;
 export type TownOrderKey = typeof townOrderKeys[number];
 
 const offers = {
   wheat_supply: { item: 'wheat', quantity: 2, reward: 8, minimumResidents: 2 },
   flour_supply: { item: 'flour', quantity: 1, reward: 12, minimumResidents: 3 },
+  bread_supply: { item: 'bread', quantity: 1, reward: 30, minimumResidents: 5 },
   milk_supply: { item: 'milk', quantity: 1, reward: 10, minimumResidents: 4 },
 } as const;
 
@@ -33,7 +34,7 @@ export function orderState(now: Date, residents: number, fulfilled: TownOrderKey
 export type TownOrderError = 'town_order_expired' | 'town_order_locked' | 'town_order_fulfilled' | 'town_order_stock';
 
 export function planTownOrder(key: TownOrderKey, date: string, now: Date, residents: number,
-  fulfilled: TownOrderKey[], inventory: { wheat: number; flour: number; milk: number }) {
+  fulfilled: TownOrderKey[], inventory: { wheat: number; flour: number; milk: number; bread: number }) {
   if (date !== utcOrderDate(now)) return 'town_order_expired';
   const offer = offers[key];
   if (residents < offer.minimumResidents) return 'town_order_locked';

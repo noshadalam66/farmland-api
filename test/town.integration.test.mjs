@@ -93,7 +93,7 @@ test('town buildings charge once and residents arrive from server time', async (
   assert.equal((await send({ ...order, expectedRevision: 0 }, 'other')).json().code, 'town_order_locked');
   assert.equal((await send(order)).json().code, 'town_order_stock');
 
-  await pool.query('UPDATE starter_farms SET wheat = 4, milk = 1, flour = 1 WHERE player_uid = $1', [uid]);
+  await pool.query('UPDATE starter_farms SET wheat = 4, milk = 1, flour = 1, bread = 1 WHERE player_uid = $1', [uid]);
   const results = await Promise.all([send(order), send(order, 'second')]);
   assert.deepEqual(results.map((response) => response.statusCode), [200, 200]);
   assert.deepEqual(results[0].json(), results[1].json());
@@ -107,7 +107,7 @@ test('town buildings charge once and residents arrive from server time', async (
   assert.equal((await load('other')).json().townOrders.offers[0].fulfilled, false);
 
   let next = fulfilled;
-  for (const [orderKey, item, reward] of [['flour_supply', 'flour', 12], ['milk_supply', 'milk', 10]]) {
+  for (const [orderKey, item, reward] of [['flour_supply', 'flour', 12], ['milk_supply', 'milk', 10], ['bread_supply', 'bread', 30]]) {
     const response = await send({ ...order, orderKey, commandId: randomUUID(), expectedRevision: next.revision });
     assert.equal(response.statusCode, 200);
     const state = response.json();
@@ -118,6 +118,6 @@ test('town buildings charge once and residents arrive from server time', async (
   const orderCredits = await pool.query(
     "SELECT coin_delta FROM farm_wallet_entries WHERE player_uid = $1 AND reason = 'town_order' ORDER BY coin_delta", [uid],
   );
-  assert.deepEqual(orderCredits.rows, [{ coin_delta: 8 }, { coin_delta: 10 }, { coin_delta: 12 }]);
+  assert.deepEqual(orderCredits.rows, [{ coin_delta: 8 }, { coin_delta: 10 }, { coin_delta: 12 }, { coin_delta: 30 }]);
 
 });
