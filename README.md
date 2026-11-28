@@ -220,3 +220,15 @@ residents. The starter warehouse holds three loaves. For 18 coins, players
 with a bakery can upgrade it to twelve. A finished batch stays ready until
 storage is available. The farm snapshot exposes the recipe, prices, stock, and batch
 deadline. All commands use the existing revision and replay protection.
+
+### Phase 6 town infrastructure
+
+Apply migration 000018 before deploying the API. A road extension opens
+rowhouse construction. Rowhouses add six residents of housing capacity.
+Each water tower, power station, and wastewater plant serves up to twelve
+residents, with two of each available. Rowhouses and subsequent housing
+require enough of all three utilities for the resulting housing capacity.
+Existing cottages keep their saved occupancy schedule. The town snapshot
+reports service coverage, wellbeing across six services, and the next
+scheduled arrival. Resident growth and daily contract eligibility use
+server time.
