@@ -194,23 +194,34 @@ test('a selected world serves real terrain to a second session of the same accou
     }
   });
 
-  const selection = { requestId: randomUUID(), latitude: 37.7598, longitude: -122.499, areaKm2: 9 };
-  const submitted = await app.inject({
-    method: 'POST', url: '/v1/world', payload: selection,
-    headers: { authorization: 'Bearer first-session' },
-  });
-  assert.equal(submitted.statusCode, 201);
-  assert.equal(submitted.json().status, 'queued');
-  assert.equal(await processTerrainJob(pool, {
+  const config = {
     root, source: realSource, sourceId: 'USGS-3DEP',
     python: process.env.TERRAIN_PYTHON ?? 'python3',
     exporter: fileURLToPath(new URL('../workers/terrain/export.py', import.meta.url)),
     water: { source: realWater, sourceId: 'Census-TIGER-2024' },
-  }), 'ready');
-
+  };
+  const post = (payload) => app.inject({
+    method: 'POST', url: '/v1/world', payload,
+    headers: { authorization: 'Bearer first-session' },
+  });
   const get = (url, token = 'second-session') =>
     app.inject({ url, headers: { authorization: `Bearer ${token}` } });
   const terrain = (name, token) => get('/v1/world/terrain/' + name, token);
+
+  const outside = { requestId: randomUUID(), latitude: 0, longitude: 0, areaKm2: 9 };
+  assert.equal((await post(outside)).statusCode, 201);
+  assert.equal(await processTerrainJob(pool, config), 'failed');
+  assert.equal((await get('/v1/world')).json().failureCode, 'terrain_outside_coverage');
+
+  const selection = {
+    requestId: randomUUID(), latitude: 37.7598, longitude: -122.499, areaKm2: 9,
+    replaceFailedRequestId: outside.requestId,
+  };
+  const submitted = await post(selection);
+  assert.equal(submitted.statusCode, 201);
+  assert.equal(submitted.json().status, 'queued');
+  assert.equal(await processTerrainJob(pool, config), 'ready');
+
   const ready = (await get('/v1/world')).json();
   assert.equal(ready.status, 'ready');
   assert.equal(ready.worldId, submitted.json().worldId);

@@ -57,8 +57,9 @@ export async function processTerrainJob(pool: Pool, config: TerrainJobConfig) {
       '--area-km2', String(job.areaKm2),
       ...(config.water ? ['--water-source', config.water.source, '--water-source-id', config.water.sourceId] : []),
     ], { timeout: 120_000, killSignal: 'SIGKILL' });
-  } catch {
-    failureCode = 'terrain_export_failed';
+  } catch (error) {
+    const exitCode = (error as { code?: number | string }).code;
+    failureCode = exitCode === 3 ? 'terrain_outside_coverage' : 'terrain_export_failed';
   }
 
   const status = failureCode ? 'failed' : 'ready';
