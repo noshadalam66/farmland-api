@@ -392,7 +392,7 @@ export class FarmStore {
         break;
       }
       case 'build_town': {
-        const price = constructionPrice(command.building, buildings, expansion !== undefined);
+        const price = constructionPrice(command.building, state.town, expansion !== undefined);
         if (typeof price === 'string') return { ok: false, code: price, state };
         if (farm.coins < price) return { ok: false, code: 'insufficient_coins', state };
         const building = await constructBuilding(client, playerUid, command.building, now);
