@@ -13,6 +13,10 @@ CELLS_PER_CHUNK = 32
 CHUNK_METERS = 1000
 
 
+class TerrainCoverageError(ValueError):
+    """The selected area extends beyond available elevation data."""
+
+
 def rasterize_water(source, elevation_grid):
     vector = gdal.OpenEx(str(source), gdal.OF_VECTOR)
     if vector.GetLayerCount() != 1:
@@ -66,7 +70,7 @@ def export(source, source_id, latitude, longitude, area_km2, output, water_sourc
     )
     heights = grid.GetRasterBand(1).ReadAsArray()
     if not np.isfinite(heights).all():
-        raise ValueError("Elevation source does not cover the requested area.")
+        raise TerrainCoverageError("Elevation source does not cover the requested area.")
 
     water = rasterize_water(water_source, grid) if water_source is not None else None
     chunks = []
@@ -124,6 +128,8 @@ def main():
             args.source, args.source_id, args.latitude, args.longitude, args.area_km2,
             args.output, args.water_source, args.water_source_id,
         )
+    except TerrainCoverageError as error:
+        parser.exit(3, f"{error}\n")
     except (OSError, RuntimeError, ValueError) as error:
         parser.exit(1, f"{error}\n")
 
