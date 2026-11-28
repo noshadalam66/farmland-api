@@ -14,7 +14,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends python3-gdal python3-numpy \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
-COPY --from=build /release/ ./
+COPY --from=build --chown=node:node --chmod=u=rwX,go=rX /release/ ./
 ENV TERRAIN_PYTHON=/usr/bin/python3
 USER node
 EXPOSE 8080
