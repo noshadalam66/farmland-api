@@ -184,3 +184,13 @@ the UTC date, offers, prerequisites, and which offers have been filled. Send
 Wheat, flour, and milk offers unlock at two, three, and four residents.
 Each offer can be fulfilled once per UTC day. Changes to inventory, coins,
 and the receipt commit together.
+
+### Phase 3 farming acceptance
+
+With the gameplay migrations applied to a disposable database, run
+`TEST_REAL_CROP_TIMERS=1 npm run test:integration` using the usual
+`TEST_DATABASE_URL`. The Phase 3 check takes about four minutes. It
+lets the three crops mature on their real server timers, resumes from
+a second session, sells rice, buys the expansion, and harvests the two
+plots independently. The check uses separate API sessions for one
+test account. Verify the same flow in the platform builds for release.
