@@ -133,3 +133,13 @@ user (UID 1000), which needs write access to that directory for the worker.
 Mount the elevation and optional water datasets read-only in the worker
 and set the source paths and IDs described above. Keep database and
 Firebase credentials in the deployment configuration.
+
+### Check a staging deployment
+
+Use a test account to request the 9 km² San Francisco world
+(center 37.7598, -122.499) on the staging deployment. Then set
+`FARM_API_ORIGIN` to the HTTPS API origin, `FARMLAND_ID_TOKEN` to the test
+account's Firebase ID token, and `FARMLAND_TERRAIN_PACKAGE` to a new output
+directory. Run `node test/phase-two-acceptance.mjs`. This waits for the
+worker and saves the verified package for the client repository's Unity
+mesh check.
