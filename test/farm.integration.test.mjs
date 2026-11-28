@@ -305,6 +305,8 @@ test('farm commands preserve progress across sessions and retries', async (t) =>
   assert.equal(chick.fatherId, father.animalId);
   assert.equal(Date.parse(chick.matureAt) - Date.parse(birth.serverTime), 120_000);
   assert.deepEqual((await load('ios')).json().livestock, birth.livestock);
+  const feedChick = { ...feed, commandId: randomUUID(), expectedRevision: birth.revision, animalId: chick.animalId };
+  assert.equal((await submit('web', feedChick)).json().code, 'animal_not_mature');
   const relatedPair = { ...breed, commandId: randomUUID(), expectedRevision: birth.revision,
     animalId: chick.animalId, partnerId: chick.sex === 'female' ? father.animalId : chickenId };
   assert.equal((await submit('web', relatedPair)).json().code, 'invalid_breeding_pair');
@@ -350,5 +352,31 @@ test('farm commands preserve progress across sessions and retries', async (t) =>
   );
   assert.deepEqual(factoryLedger.rows, [{ reason: 'mill_purchase', coin_delta: -millPrice },
     { reason: 'flour_sale', coin_delta: milled.json().mill.flourPrice }]);
+
+  let marketState = soldFlour.json();
+  for (const product of ['eggs', 'milk']) {
+    const sale = { commandId: randomUUID(), expectedRevision: marketState.revision, action: 'sell_' + product };
+    assert.equal((await submit('web', { ...sale, crop: 'wheat' })).statusCode, 400);
+
+    const attempts = await Promise.all([submit('web', sale), submit('ios', sale)]);
+    assert.deepEqual(attempts.map((result) => result.statusCode), [200, 200]);
+    const sold = attempts[0].json();
+    assert.deepEqual(attempts[1].json(), sold);
+    assert.equal(sold.inventory[product], 0);
+    assert.equal(sold.wallet.coins - marketState.wallet.coins, marketState.livestock.productPrices[product]);
+    assert.equal((await submit('ios', { ...sale, commandId: randomUUID(),
+      expectedRevision: sold.revision })).json().code, 'insufficient_animal_product');
+    marketState = sold;
+  }
+  const livestockLedger = await pool.query(
+    "SELECT coin_delta FROM farm_wallet_entries WHERE player_uid = $1 AND reason = 'livestock_sale' ORDER BY coin_delta",
+    [playerUid],
+  );
+  assert.deepEqual(livestockLedger.rows.map(({ coin_delta }) => coin_delta),
+    [marketState.livestock.productPrices.eggs, marketState.livestock.productPrices.milk]);
+  const reopened = (await load('android')).json();
+  assert.deepEqual(reopened.inventory, marketState.inventory);
+  assert.deepEqual(reopened.wallet, marketState.wallet);
+  assert.deepEqual(reopened.livestock, marketState.livestock);
 
 });

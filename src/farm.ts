@@ -1,6 +1,6 @@
 import type { Pool, PoolClient } from 'pg';
-import { animalCapacity, animalPrices, animalProduction, animalRosterExpression, breedingExpression, createAnimal, eligiblePair, setProductionTimer,
-  type Animal, type AnimalSpecies, type Breeding } from './livestock.js';
+import { animalCapacity, animalProductPrices, animalPrices, animalProduction, animalRosterExpression, breedingExpression, createAnimal, eligiblePair, setProductionTimer,
+  type Animal, type AnimalSaleAction, type AnimalSpecies, type Breeding } from './livestock.js';
 
 import { millExpression, millState, planMillAction, type Mill, type MillAction, type MillError } from './mill.js';
 
@@ -30,7 +30,7 @@ export type FarmCommand = {
   | { action: 'buy_animal'; crop?: never; plotId?: never; species: AnimalSpecies; animalId?: never }
   | { action: 'feed_animal' | 'collect_animal'; crop?: never; plotId?: never; species?: never; animalId: string }
   | { action: 'start_breeding'; crop?: never; plotId?: never; species?: never; animalId: string; partnerId: string }
-  | { action: 'collect_offspring' | MillAction; crop?: never; plotId?: never; species?: never; animalId?: never }
+  | { action: 'collect_offspring' | MillAction | AnimalSaleAction; crop?: never; plotId?: never; species?: never; animalId?: never }
   | { action: 'build_town'; crop?: never; plotId?: never; species?: never; animalId?: never; building: BuildingKind }
   | { action: 'fulfil_town_order'; crop?: never; plotId?: never; species?: never; animalId?: never; orderKey: TownOrderKey; orderDate: string }
 );
@@ -60,7 +60,7 @@ export type FarmState = {
   cropGrowthMilliseconds: Record<Crop, number>;
   plot: PlotState;
   expansion: { owned: boolean; price: number; plot: PlotState };
-  livestock: { animals: Animal[]; prices: Record<AnimalSpecies, number>; capacity: number; breeding: Breeding | null };
+  livestock: { animals: Animal[]; prices: Record<AnimalSpecies, number>; capacity: number; breeding: Breeding | null; productPrices: typeof animalProductPrices };
   mill: ReturnType<typeof millState>;
   town: ReturnType<typeof townState>;
   townOrders: ReturnType<typeof orderState>;
@@ -71,7 +71,7 @@ type PlotState = { crop: Crop; plantedAt: string; readyAt: string } | null;
 
 type CommandResult =
   | { ok: true; state: FarmState }
-  | { ok: false; code: 'command_id_reused' | 'stale_revision' | 'plot_occupied' | 'plot_empty' | 'crop_not_ready' | 'insufficient_crop' | 'insufficient_coins' | 'parcel_already_owned' | 'parcel_not_owned' | 'livestock_capacity' | 'animal_not_owned' | 'animal_already_fed' | 'animal_not_fed' | 'product_not_ready' | 'breeding_in_progress' | 'breeding_not_started' | 'offspring_not_ready' | 'invalid_breeding_pair' | MillError | TownError | TownOrderError; state: FarmState };
+  | { ok: false; code: 'command_id_reused' | 'stale_revision' | 'plot_occupied' | 'plot_empty' | 'crop_not_ready' | 'insufficient_crop' | 'insufficient_coins' | 'parcel_already_owned' | 'parcel_not_owned' | 'livestock_capacity' | 'animal_not_owned' | 'animal_not_mature' | 'insufficient_animal_product' | 'animal_already_fed' | 'animal_not_fed' | 'product_not_ready' | 'breeding_in_progress' | 'breeding_not_started' | 'offspring_not_ready' | 'invalid_breeding_pair' | MillError | TownError | TownOrderError; state: FarmState };
 
 const expansionPrice = 7;
 const sellPrices: Record<Crop, number> = { wheat: 3, corn: 5, rice: 7 };
@@ -83,7 +83,7 @@ type SavedFarmState = Omit<FarmState, 'cropGrowthMilliseconds' | 'inventory' | '
   wallet?: FarmState['wallet'];
   market?: FarmState['market'];
   expansion?: FarmState['expansion'];
-  livestock?: FarmState['livestock'];
+  livestock?: Omit<FarmState['livestock'], 'productPrices'> & Pick<Partial<FarmState['livestock']>, 'productPrices'>;
   mill?: FarmState['mill'];
   town?: FarmState['town'];
   townOrders?: FarmState['townOrders'];
@@ -103,9 +103,10 @@ function readSavedState(state: SavedFarmState): FarmState {
     expansion: state.expansion ?? { owned: false, price: expansionPrice, plot: null },
     livestock: state.livestock ? {
       ...state.livestock,
+      productPrices: state.livestock.productPrices ?? animalProductPrices,
       breeding: state.livestock.breeding ?? null,
       animals: state.livestock.animals.map((animal) => ({ ...animal, productReadyAt: animal.productReadyAt ?? null })),
-    } : { animals: [], prices: animalPrices, capacity: animalCapacity, breeding: null },
+    } : { animals: [], prices: animalPrices, capacity: animalCapacity, breeding: null, productPrices: animalProductPrices },
     plot: state.plot ? { ...state.plot, crop: state.plot.crop ?? 'wheat' } : null,
   };
 }
@@ -124,7 +125,7 @@ function snapshot(farm: FarmRow, now: Date, animals: Animal[], breeding: Breedin
     market: { sellPrices },
     cropGrowthMilliseconds: growthMilliseconds,
     plot: plotState(farm),
-    livestock: { animals, prices: animalPrices, capacity: animalCapacity, breeding },
+    livestock: { animals, prices: animalPrices, capacity: animalCapacity, breeding, productPrices: animalProductPrices },
     expansion: { owned: expansion !== undefined, price: expansionPrice, plot: plotState(expansion) },
     mill: millState(mill),
     town,
@@ -255,6 +256,9 @@ export class FarmStore {
     if (command.action === 'feed_animal') {
       if (!animal) return { ok: false, code: 'animal_not_owned', state };
       if (animal.productReadyAt) return { ok: false, code: 'animal_already_fed', state };
+      if (animal.matureAt && now.getTime() < Date.parse(animal.matureAt)) {
+        return { ok: false, code: 'animal_not_mature', state };
+      }
       if (farm.wheat < 1) return { ok: false, code: 'insufficient_crop', state };
     }
     if (command.action === 'collect_animal') {
@@ -346,6 +350,20 @@ export class FarmStore {
             !feeding && production.product === 'eggs' ? 1 : 0],
         );
         updated = inventoryUpdated;
+        break;
+      }
+      case 'sell_milk':
+      case 'sell_eggs': {
+        const product = command.action === 'sell_milk' ? 'milk' : 'eggs';
+        if (farm[product] < 1) return { ok: false, code: 'insufficient_animal_product', state };
+        coinDelta = animalProductPrices[product];
+        reason = 'livestock_sale';
+        const { rows: [sold] } = await client.query<FarmRow>(
+          `UPDATE starter_farms SET revision = revision + 1, coins = coins + $2,
+             milk = milk - $3, eggs = eggs - $4 WHERE player_uid = $1 RETURNING *`,
+          [playerUid, coinDelta, product === 'milk' ? 1 : 0, product === 'eggs' ? 1 : 0],
+        );
+        updated = sold;
         break;
       }
       case 'fulfil_town_order': {
