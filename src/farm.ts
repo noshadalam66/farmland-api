@@ -57,6 +57,7 @@ export type FarmState = {
   inventory: Record<Crop | Product, number>;
   wallet: { coins: number };
   market: { sellPrices: Record<Crop, number> };
+  cropGrowthMilliseconds: Record<Crop, number>;
   plot: PlotState;
   expansion: { owned: boolean; price: number; plot: PlotState };
   livestock: { animals: Animal[]; prices: Record<AnimalSpecies, number>; capacity: number; breeding: Breeding | null };
@@ -76,8 +77,9 @@ const expansionPrice = 7;
 const sellPrices: Record<Crop, number> = { wheat: 3, corn: 5, rice: 7 };
 const growthMilliseconds: Record<Crop, number> = { wheat: 60_000, corn: 90_000, rice: 120_000 };
 
-type SavedFarmState = Omit<FarmState, 'inventory' | 'plot' | 'wallet' | 'market' | 'expansion' | 'livestock' | 'mill' | 'town' | 'townOrders'> & {
+type SavedFarmState = Omit<FarmState, 'cropGrowthMilliseconds' | 'inventory' | 'plot' | 'wallet' | 'market' | 'expansion' | 'livestock' | 'mill' | 'town' | 'townOrders'> & {
   inventory: { wheat: number; corn?: number; rice?: number; milk?: number; eggs?: number; flour?: number };
+  cropGrowthMilliseconds?: FarmState['cropGrowthMilliseconds'];
   wallet?: FarmState['wallet'];
   market?: FarmState['market'];
   expansion?: FarmState['expansion'];
@@ -97,6 +99,7 @@ function readSavedState(state: SavedFarmState): FarmState {
     townOrders: state.townOrders ?? orderState(new Date(state.serverTime), state.town?.residents ?? 0, []),
     wallet: state.wallet ?? { coins: 0 },
     market: state.market ?? { sellPrices },
+    cropGrowthMilliseconds: state.cropGrowthMilliseconds ?? growthMilliseconds,
     expansion: state.expansion ?? { owned: false, price: expansionPrice, plot: null },
     livestock: state.livestock ? {
       ...state.livestock,
@@ -119,6 +122,7 @@ function snapshot(farm: FarmRow, now: Date, animals: Animal[], breeding: Breedin
     inventory: { wheat: farm.wheat, corn: farm.corn, rice: farm.rice, milk: farm.milk, eggs: farm.eggs, flour: farm.flour },
     wallet: { coins: farm.coins },
     market: { sellPrices },
+    cropGrowthMilliseconds: growthMilliseconds,
     plot: plotState(farm),
     livestock: { animals, prices: animalPrices, capacity: animalCapacity, breeding },
     expansion: { owned: expansion !== undefined, price: expansionPrice, plot: plotState(expansion) },

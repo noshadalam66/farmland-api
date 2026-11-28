@@ -50,6 +50,7 @@ test('farm commands preserve progress across sessions and retries', async (t) =>
 
   const initial = (await load('android')).json();
   assert.equal(initial.revision, 0);
+  assert.deepEqual(initial.cropGrowthMilliseconds, { wheat: 60_000, corn: 90_000, rice: 120_000 });
   assert.equal(initial.plot, null);
   const plant = { commandId: randomUUID(), expectedRevision: 0, action: 'plant' };
   assert.equal((await submit('android', { ...plant, expectedRevision: '0' })).statusCode, 400);
@@ -59,7 +60,7 @@ test('farm commands preserve progress across sessions and retries', async (t) =>
   const browserState = (await load('web')).json();
   assert.equal(browserState.revision, 1);
   assert.deepEqual(browserState.plot, plantState.plot);
-  assert.equal(Date.parse(browserState.plot.readyAt) - Date.parse(browserState.plot.plantedAt), 60_000);
+  assert.equal(Date.parse(browserState.plot.readyAt) - Date.parse(browserState.plot.plantedAt), initial.cropGrowthMilliseconds.wheat);
   assert.equal((await load('other')).json().revision, 0);
   assert.equal((await submit('ios', { ...plant, action: 'harvest' })).json().code, 'command_id_reused');
 
